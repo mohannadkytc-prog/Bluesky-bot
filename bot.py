@@ -16,7 +16,8 @@ from flask import Flask, request, jsonify, render_template
 # Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# تأكدي أن هذه الاستيرادات موجودة لديك
+# 🛑 🛑 التعديل الأخير والحاسم: تعطيل الاستيرادات الخارجية
+# من المحتمل أن الانهيار سببه فشل في جلب هذه الملفات (Import Error)
 # from bluesky_bot import BlueSkyBot
 # from config import Config
 # from models import init_db, BotRun, TaskConfig, SavedCredentials, db
@@ -64,7 +65,7 @@ bot_progress = {
 
 
 # ----------------------------------------------------------------------
-# 🚀 الدوال الأساسية
+# 🚀 الدوال الأساسية (الآن لا تفعل شيئاً سوى الانتظار)
 # ----------------------------------------------------------------------
 
 worker_thread = None
@@ -94,16 +95,15 @@ def bot_worker_loop():
         try:
             logger.info(f"Starting actual task processing: {current_task['id']}")
             
-            # 1. تهيئة البوت وتسجيل الدخول
-            # ⚠️ التعديل الأخير: تم حذف app_context=app لتجنب خطأ الانهيار
-           # bot = BlueSkyBot(
-             #   current_task['bluesky_handle'],
-             #   current_task['bluesky_password']
-          #  )
+            # 🛑 1. تهيئة البوت وتسجيل الدخول (معطل بالكامل للتأكد من تخطي خطأ الاستيراد)
+            # bot = BlueSkyBot(
+            #     current_task['bluesky_handle'],
+            #     current_task['bluesky_password']
+            # )
             
-            # 2. تشغيل المهمة الفعلية (هذا هو كود المعالجة الخاص بكِ)
-            # يجب أن يكون الكود هنا مثل: bot.run_task(current_task, bot_progress, stop_event) 
+            logger.info("Worker reached the processing block successfully.") # رسالة تأكيد
             
+            # 2. تشغيل المهمة الفعلية 
             logger.info("Executing main bot logic (Placeholder/Actual logic)")
             time.sleep(15) # محاكاة عمل البوت
             
@@ -134,7 +134,7 @@ def save_credentials_to_database(user_session, bluesky_handle, bluesky_password,
     """Placeholder for saving credentials function"""
     pass
 
-# ⚠️ التعديل الحاسم: دالة الاستئناف التلقائي معطلة بالكامل
+# ⚠️ دالة الاستئناف التلقائي معطلة بالكامل
 def auto_resume_from_persistence():
     """(معطلة) Automatically resume tasks from saved progress on startup"""
     pass 
@@ -144,7 +144,7 @@ def auto_resume_from_persistence():
 # ----------------------------------------------------------------------
 
 # Initialize database
-# init_db(app)
+# init_db(app) # 🛑 معطل لتجنب أخطاء قاعدة البيانات
 
 # 🚀 **بدء تشغيل العامل الخلفي (تم الترتيب ليتجنب NameError)**
 start_background_worker() 
@@ -270,9 +270,13 @@ def detailed_progress():
     try:
         # Get database statistics
         with app.app_context():
-            total_bot_runs = BotRun.query.count()
-            completed_runs = BotRun.query.filter_by(status='completed').count()
-            failed_runs = BotRun.query.filter_by(status='failed').count()
+            # 🛑 معطل لضمان عدم ظهور NameError
+            # total_bot_runs = BotRun.query.count()
+            # completed_runs = BotRun.query.filter_by(status='completed').count()
+            # failed_runs = BotRun.query.filter_by(status='failed').count()
+            total_bot_runs = 0
+            completed_runs = 0
+            failed_runs = 0
             
         detailed_stats = {
             **bot_progress,
@@ -280,7 +284,7 @@ def detailed_progress():
                 'total_bot_runs': total_bot_runs,
                 'completed_runs': completed_runs,
                 'failed_runs': failed_runs,
-                'success_rate': (completed_runs / total_bot_runs * 100) if total_bot_runs > 0 else 0
+                'success_rate': 0.0
             },
             'runtime_stats': {
                 'session_uptime': (datetime.utcnow() - datetime.fromisoformat(bot_progress['session_start_time'])).total_seconds(),
