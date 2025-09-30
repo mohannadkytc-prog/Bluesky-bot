@@ -16,6 +16,10 @@ from flask import Flask, request, jsonify, render_template
 # Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# 🛑 الأسطر المحذوفة نهائياً لتجنب ImportError:
+# from bluesky_bot import BlueSkyBot
+# from config import Config
+# from models import init_db, BotRun, TaskConfig, SavedCredentials, db
 
 
 # Configure logging
@@ -90,7 +94,7 @@ def bot_worker_loop():
         try:
             logger.info(f"Starting actual task processing: {current_task['id']}")
             
-            # 🛑 1. تهيئة البوت وتسجيل الدخول (معطل بالكامل للتأكد من تخطي خطأ الاستيراد)
+            # 🛑 1. تهيئة البوت وتسجيل الدخول (معطل بالكامل)
             # bot = BlueSkyBot(
             #     current_task['bluesky_handle'],
             #     current_task['bluesky_password']
@@ -263,12 +267,8 @@ def get_progress():
 def detailed_progress():
     """Get detailed progress with statistics"""
     try:
-        # Get database statistics
+        # Get database statistics (معطل)
         with app.app_context():
-            # 🛑 معطل لضمان عدم ظهور NameError
-            # total_bot_runs = BotRun.query.count()
-            # completed_runs = BotRun.query.filter_by(status='completed').count()
-            # failed_runs = BotRun.query.filter_by(status='failed').count()
             total_bot_runs = 0
             completed_runs = 0
             failed_runs = 0
