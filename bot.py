@@ -16,11 +16,6 @@ from flask import Flask, request, jsonify, render_template
 # Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# 🛑 🛑 التعديل الأخير والحاسم: تعطيل الاستيرادات الخارجية
-# من المحتمل أن الانهيار سببه فشل في جلب هذه الملفات (Import Error)
-# from bluesky_bot import BlueSkyBot
-# from config import Config
-# from models import init_db, BotRun, TaskConfig, SavedCredentials, db
 
 
 # Configure logging
