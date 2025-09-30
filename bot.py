@@ -64,7 +64,7 @@ bot_progress = {
 
 
 # ----------------------------------------------------------------------
-# 🚀 الدوال الأساسية (مكانها الصحيح لتجنب NameError)
+# 🚀 الدوال الأساسية
 # ----------------------------------------------------------------------
 
 worker_thread = None
@@ -86,41 +86,40 @@ def bot_worker_loop():
             continue
             
         # 🚀 بدء معالجة المهمة الفعلية
-        with app.app_context(): # مهم جداً للوصول إلى قاعدة البيانات والمكتبات
-            current_task = bot_queue.pop(0)
-            is_processing = True
-            bot_progress['status'] = 'processing'
-            bot_progress['current_task_id'] = current_task['id']
+        current_task = bot_queue.pop(0)
+        is_processing = True
+        bot_progress['status'] = 'processing'
+        bot_progress['current_task_id'] = current_task['id']
+        
+        try:
+            logger.info(f"Starting actual task processing: {current_task['id']}")
             
-            try:
-                logger.info(f"Starting actual task processing: {current_task['id']}")
-                
-                # 1. تهيئة البوت وتسجيل الدخول
-                # ⚠️ التعديل الأخير: تم حذف app_context=app لتجنب خطأ الانهيار
-                bot = BlueSkyBot(
-                    current_task['bluesky_handle'],
-                    current_task['bluesky_password']
-                )
-                
-                # 2. تشغيل المهمة الفعلية (هذا هو كود المعالجة الخاص بكِ)
-                # يجب أن يكون الكود هنا مثل: bot.run_task(current_task, bot_progress, stop_event) 
-                
-                logger.info("Executing main bot logic (Placeholder/Actual logic)")
-                time.sleep(15) # محاكاة عمل البوت
-                
-                # 3. إنهاء المهمة وتحديث الحالة
-                bot_progress['status'] = 'completed'
-                logger.info(f"Task {current_task['id']} completed successfully.")
-                
-            except Exception as e:
-                bot_progress['status'] = 'failed'
-                logger.error(f"❌ Critical error during task {current_task['id']}: {e}")
+            # 1. تهيئة البوت وتسجيل الدخول
+            # ⚠️ التعديل الأخير: تم حذف app_context=app لتجنب خطأ الانهيار
+            bot = BlueSkyBot(
+                current_task['bluesky_handle'],
+                current_task['bluesky_password']
+            )
             
-            finally:
-                current_task = None
-                is_processing = False
-                bot_progress['queue_size'] = len(bot_queue)
-                stop_event.clear() # جاهز للتعامل مع مهمة جديدة
+            # 2. تشغيل المهمة الفعلية (هذا هو كود المعالجة الخاص بكِ)
+            # يجب أن يكون الكود هنا مثل: bot.run_task(current_task, bot_progress, stop_event) 
+            
+            logger.info("Executing main bot logic (Placeholder/Actual logic)")
+            time.sleep(15) # محاكاة عمل البوت
+            
+            # 3. إنهاء المهمة وتحديث الحالة
+            bot_progress['status'] = 'completed'
+            logger.info(f"Task {current_task['id']} completed successfully.")
+            
+        except Exception as e:
+            bot_progress['status'] = 'failed'
+            logger.error(f"❌ Critical error during task {current_task['id']}: {e}")
+        
+        finally:
+            current_task = None
+            is_processing = False
+            bot_progress['queue_size'] = len(bot_queue)
+            stop_event.clear() # جاهز للتعامل مع مهمة جديدة
 
 def start_background_worker():
     """Starts the worker thread if it's not already running"""
