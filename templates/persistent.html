@@ -1,76 +1,99 @@
-<title>🤖 Persistent Bluesky Bot</title>
-<style> 
-/* CSS styles for the interface */ 
-* { margin: 0; padding: 0; box-sizing: border-box; }
-
-body { 
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-    min-height: 100vh; 
-    padding: 20px; 
-    color: #333; 
-} 
-.container { 
-    max-width: 800px; 
-    margin: 0 auto; 
-    background: rgba(255, 255, 255, 0.95); 
-    border-radius: 20px; 
-    padding: 40px; 
-    box-shadow: 0 20px 40px rgba(0,0,0,0.1); 
-} 
-/* باقي الأنماط... */ 
-</style>
-
-<div class="container">
-    <h1>🤖 Persistent Bluesky Bot</h1>
-    <p>يعمل بشكل مستمر في الخلفية، حتى عند إغلاق الصفحة</p>
-    
-    <form id="botForm"> 
-        <div class="form-group"> 
-            <label for="bluesky_handle">حساب بلوسكاي</label> 
-            <input type="text" id="bluesky_handle" name="bluesky_handle" placeholder="StillAlive15.bsky.social" value="StillAlive15.bsky.social"> 
-        </div> 
-        <div class="form-group"> 
-            <label for="bluesky_password">كلمة المرور</label> 
-            <input type="password" id="bluesky_password" name="bluesky_password" placeholder="Your app password" value="2bgo-7sdw-ovnk-wh7j"> 
-        </div> 
-        </form> 
-    
-    <script> 
-        // JavaScript للتحكم في البوت 
-        function queueTask() { 
-            // إرسال المهمة للبوت 
-            fetch('/queue_task', { 
-                method: 'POST', 
-                headers: { 
-                    'Content-Type': 'application/json' 
-                }, 
-                body: JSON.stringify({ 
-                    post_urls: [document.getElementById('post_url_1').value], 
-                    message_templates: getMessageTemplates(), 
-                    bluesky_handle: document.getElementById('bluesky_handle').value, 
-                    bluesky_password: document.getElementById('bluesky_password').value, 
-                    processing_type: 'reposts', 
-                    min_delay: 180, 
-                    max_delay: 300 
-                }) 
-            }) 
-            .then(response => response.json()) 
-            .then(data => { 
-                console.log('Task queued:', data); 
-            }); 
-        } 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 Persistent Bluesky Bot</title>
+    <style>
+        /* CSS styles for the interface */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
         
-        // تحديث الحالة كل 5 ثوان 
-        setInterval(updateStatus, 5000); 
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
         
-        function updateStatus() { 
-            fetch('/detailed_progress') 
-            .then(response => response.json()) 
-            .then(data => { 
-                // تحديث واجهة المستخدم بالتقدم 
-                document.getElementById('currentProgress').textContent = `${data.current}/${data.total} (${data.percentage}%)`; 
-            }); 
-        } 
-    </script> 
-</div>
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+        }
+        
+        /* باقي الأنماط... */
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Persistent Bluesky Bot</h1>
+            <p>يعمل بشكل مستمر في الخلفية، حتى عند إغلاق الصفحة</p>
+        </div>
+        
+        <!-- باقي محتوى واجهة المستخدم... -->
+        
+        <form id="botForm">
+            <!-- نموذج إدخال البيانات -->
+            <div class="form-group">
+                <label for="bluesky_handle">حساب بلوسكاي</label>
+                <input type="text" id="bluesky_handle" name="bluesky_handle" 
+                       placeholder="StillAlive15.bsky.social" value="StillAlive15.bsky.social">
+            </div>
+            
+            <div class="form-group">
+                <label for="bluesky_password">كلمة المرور</label>
+                <input type="password" id="bluesky_password" name="bluesky_password" 
+                       placeholder="Your app password" value="2bgo-7sdw-ovnk-wh7j">
+            </div>
+            
+            <!-- باقي الحقول... -->
+        </form>
+    </div>
+
+    <script>
+        // JavaScript للتحكم في البوت
+        function queueTask() {
+            // إرسال المهمة للبوت
+            fetch('/queue_task', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    post_urls: [document.getElementById('post_url_1').value],
+                    message_templates: getMessageTemplates(),
+                    bluesky_handle: document.getElementById('bluesky_handle').value,
+                    bluesky_password: document.getElementById('bluesky_password').value,
+                    processing_type: 'reposts',
+                    min_delay: 180,
+                    max_delay: 300
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log('Task queued:', data);
+            });
+        }
+        
+        // تحديث الحالة كل 5 ثوان
+        setInterval(updateStatus, 5000);
+        
+        function updateStatus() {
+            fetch('/detailed_progress')
+                .then(response => response.json())
+                .then(data => {
+                    // تحديث واجهة المستخدم بالتقدم
+                    document.getElementById('currentProgress').textContent = 
+                        `${data.current}/${data.total} (${data.percentage}%)`;
+                });
+        }
+    </script>
+</body>
+</html>
