@@ -122,10 +122,9 @@ start_background_worker()
 # ----------------------------------------------------------------------
 
 def auto_resume_from_persistence():
-    """Automatically resume tasks from saved progress on startup"""
-    global bot_queue, current_task, bot_progress, is_processing
-    # (بقية الكود الخاص بهذه الدالة... تم نقله لأعلى في الكود الأصلي)
-    # ملاحظة: تم الإبقاء على مكانها في كودك الأصلي هنا، لكن يفضل وضعها في الأعلى.
+    """(معطلة مؤقتاً) Automatically resume tasks from saved progress on startup"""
+    # نترك محتوى الدالة فارغاً لتجنب أي انهيار فوري.
+    pass 
     
     try:
         # ... (بقية كود الدالة)
