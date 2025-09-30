@@ -96,9 +96,9 @@ def bot_worker_loop():
             
             # 1. تهيئة البوت وتسجيل الدخول
             # ⚠️ التعديل الأخير: تم حذف app_context=app لتجنب خطأ الانهيار
-            bot = BlueSkyBot(
-                current_task['bluesky_handle'],
-                current_task['bluesky_password']
+           # bot = BlueSkyBot(
+             #   current_task['bluesky_handle'],
+             #   current_task['bluesky_password']
             )
             
             # 2. تشغيل المهمة الفعلية (هذا هو كود المعالجة الخاص بكِ)
