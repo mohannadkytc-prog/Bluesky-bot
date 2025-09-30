@@ -96,16 +96,15 @@ def bot_worker_loop():
                 logger.info(f"Starting actual task processing: {current_task['id']}")
                 
                 # 1. تهيئة البوت وتسجيل الدخول
+                # ⚠️ التعديل الأخير: تم حذف app_context=app لتجنب خطأ الانهيار
                 bot = BlueSkyBot(
                     current_task['bluesky_handle'],
-                    current_task['bluesky_password'],
-                    app_context=app # يجب تمرير app_context
+                    current_task['bluesky_password']
                 )
                 
                 # 2. تشغيل المهمة الفعلية (هذا هو كود المعالجة الخاص بكِ)
                 # يجب أن يكون الكود هنا مثل: bot.run_task(current_task, bot_progress, stop_event) 
                 
-                # ⚠️ إذا لم يكن لديك دالة run_task، فيجب أن يكون كود المعالجة هنا
                 logger.info("Executing main bot logic (Placeholder/Actual logic)")
                 time.sleep(15) # محاكاة عمل البوت
                 
