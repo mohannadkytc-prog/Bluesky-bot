@@ -99,7 +99,7 @@ def bot_worker_loop():
            # bot = BlueSkyBot(
              #   current_task['bluesky_handle'],
              #   current_task['bluesky_password']
-            )
+          #  )
             
             # 2. تشغيل المهمة الفعلية (هذا هو كود المعالجة الخاص بكِ)
             # يجب أن يكون الكود هنا مثل: bot.run_task(current_task, bot_progress, stop_event) 
