@@ -292,7 +292,7 @@ if __name__ == '__main__':
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🤖 Persistent Bluesky Bot</title>
+    <title> Persistent Bluesky Bot</title>
     <style>
         /* CSS styles for the interface */
         * {
