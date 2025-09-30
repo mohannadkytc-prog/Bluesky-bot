@@ -144,7 +144,7 @@ def auto_resume_from_persistence():
 # ----------------------------------------------------------------------
 
 # Initialize database
-init_db(app)
+# init_db(app)
 
 # 🚀 **بدء تشغيل العامل الخلفي (تم الترتيب ليتجنب NameError)**
 start_background_worker() 
