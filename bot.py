@@ -16,15 +16,13 @@ from flask import Flask, request, jsonify, render_template
 # Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# تأكدي أن هذه الاستيرادات موجودة لديك
 from bluesky_bot import BlueSkyBot
 from config import Config
 from models import init_db, BotRun, TaskConfig, SavedCredentials, db
-# (تأكدي من وجود دالة save_credentials_to_database و bot_worker_loop في مكان ما في ملفك الأصلي)
 
-app = Flask(__name__)
-app.secret_key = 'always_on_bot_secret_key_2025'
 
-# Configure logging (في مكان أبكر ليكون متاحاً للكل)
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -35,12 +33,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+app = Flask(__name__)
+app.secret_key = 'always_on_bot_secret_key_2025'
+
 # Global bot state
 bot_queue = []
 current_task = None
 is_processing = False
 stop_event = Event()
-# (ملاحظة: المتغيرات العالمية يجب أن تكون هنا، وتم نقلها لأعلى)
 bot_progress = {
     'current': 0,
     'total': 0,
@@ -62,9 +62,9 @@ bot_progress = {
     'success_rate': 0.0
 }
 
+
 # ----------------------------------------------------------------------
-# تعريف دوال العامل الخلفي (يجب أن تكون قبل الاستدعاء في الأسفل)
-# (لقد أضفت تعريفات الدوال الافتراضية هنا لتجنب NameError)
+# تعريف الدوال الأساسية (مكانها الصحيح لتجنب NameError)
 # ----------------------------------------------------------------------
 
 worker_thread = None
@@ -72,9 +72,6 @@ worker_thread = None
 def bot_worker_loop():
     """The main loop that processes tasks from the queue"""
     global bot_queue, current_task, is_processing, bot_progress, stop_event
-    
-    # يجب أن يكون لديك الكود الفعلي لحلقة العمل هنا.
-    # بما أن هذا الجزء غير متوفر، سأضع حلقة فارغة للمحاكاة:
     logger.info("Worker loop started.")
     while True:
         if stop_event.is_set():
@@ -89,7 +86,7 @@ def bot_worker_loop():
         # Placeholder for task processing logic
         logger.info(f"Processing task from queue...")
         # (هنا يتم تنفيذ المهام فعلياً)
-        time.sleep(10) # انتظار لتجنب استهلاك الموارد بدون عمل فعلي
+        time.sleep(10) # انتظار لتجنب استهلاك الموارد
 
 def start_background_worker():
     """Starts the worker thread if it's not already running"""
@@ -102,44 +99,26 @@ def start_background_worker():
 
 def save_credentials_to_database(user_session, bluesky_handle, bluesky_password, post_urls, message_templates):
     """Placeholder for saving credentials function"""
-    # يجب أن يكون لديك الكود الفعلي لحفظ البيانات هنا.
     pass
 
-
+# ⚠️ **التعديل الحاسم الأخير:** دالة الاستئناف التلقائي معطلة بالكامل
+def auto_resume_from_persistence():
+    """(معطلة) Automatically resume tasks from saved progress on startup"""
+    pass 
+    
 # ----------------------------------------------------------------------
-# التهيئة وبدء التشغيل (الجزء الذي قمتِ بتعديله الآن صحيح)
+# التهيئة وبدء التشغيل 
 # ----------------------------------------------------------------------
 
 # Initialize database
 init_db(app)
 
-# 🚀 **بدء تشغيل العامل الخلفي (الآن صحيح)**
-# يجب أن يتم تشغيلها هنا لتجنب NameError
+# 🚀 **بدء تشغيل العامل الخلفي (صحيح وموجود في مكان واحد فقط)**
 start_background_worker() 
 
 # ----------------------------------------------------------------------
 # الدوال الأساسية لبقية التطبيق (بدءاً من index)
 # ----------------------------------------------------------------------
-
-def auto_resume_from_persistence():
-    """(معطلة مؤقتاً) Automatically resume tasks from saved progress on startup"""
-    # نترك محتوى الدالة فارغاً لتجنب أي انهيار فوري.
-    pass 
-    
-    try:
-        # ... (بقية كود الدالة)
-        pass # Placeholder
-            
-    except Exception as e:
-        logger.error(f"❌ Error during automatic resume: {e}")
-    
-    return False
-
-# ... (بقية الدوال: index, health_check, stop_current_task, queue_task, start_bot, status, progress, detailed_progress)
-
-# ... (بقية كودك كما أرسلتيه)
-
-# ... (بقية الدوال والمسارات)
 
 @app.route('/')
 def index():
@@ -149,30 +128,136 @@ def index():
 @app.route('/health')
 def health_check():
     """Health check endpoint"""
-    # ... (الكود الداخلي)
     return {
         'status': 'healthy',
         'service': 'always-on-bot',
         'is_processing': is_processing,
         'queue_size': len(bot_queue),
-        'current_task': current_task is not None
+        'current_task': current_task['id'] if current_task else None
     }, 200
 
-# ... (بقية المسارات كما أرسلتِها، مع الحفاظ على التعديل الخاص بـ start_background_worker() داخل queue_task)
-# (ملاحظة: تم حذف تكرار الدوال لتجنب إرسال ملف طويل جداً، لكن تأكدي أن جميع دوال @app.route موجودة في الملف الذي ستنسخينه)
+@app.route('/stop_current_task', methods=['POST'])
+def stop_current_task():
+    """Stop the current running task"""
+    global current_task, is_processing, stop_event
+    try:
+        if current_task:
+            logger.info(f"Stopping current task: {current_task['id']}")
+            stop_event.set()
+            current_task = None
+            is_processing = False
+            bot_progress['status'] = 'stopped'
+            stop_event.clear()
+            logger.info("Stop event cleared - worker can now process next queued task")
+            return jsonify({'success': True, 'message': 'Task stopped successfully'})
+        else:
+            return jsonify({'success': False, 'message': 'No active task to stop'})
+    except Exception as e:
+        logger.error(f"Error stopping task: {e}")
+        return jsonify({'error': str(e)}), 500
 
-# ----------------------------------------------------------------------
-# نهاية الملف (تأكدي أن هذا الجزء محذوف)
-# ----------------------------------------------------------------------
-# # @@@@ تأكدي أن هذا الجزء محذوف تماماً @@@@
-# if __name__ == '__main__':
-#     # Try to auto-resume on startup
-#     auto_resume_from_persistence()
-#     
-#     # Start background worker
-#     start_background_worker()
-#     
-#     logger.info("Starting Always-On Bot Service on port 5000")
-#     app.run(host='0.0.0.0', port=5000, debug=False)
-# # @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@app.route('/queue_task', methods=['POST'])
+def queue_task():
+    """Add a task to the bot queue"""
+    try:
+        data = request.get_json()
+        
+        # Extract task data
+        post_urls = data.get('post_urls', [])
+        message_templates = data.get('message_templates', [])
+        bluesky_handle = data.get('bluesky_handle', '')
+        bluesky_password = data.get('bluesky_password', '')
+        processing_type = data.get('processing_type', 'likers')
+        min_delay = data.get('min_delay', 300)
+        max_delay = data.get('max_delay', 360)
+        
+        # Validation
+        post_urls = [url.strip() for url in post_urls if url.strip()]
+        if not post_urls or not bluesky_handle or not bluesky_password or max_delay < min_delay:
+             return jsonify({'error': 'Invalid input parameters'}), 400
+        
+        # Create task
+        task = {
+            'id': f"task_{int(time.time())}_{len(bot_queue)}",
+            'post_urls': post_urls,
+            'message_templates': message_templates,
+            'bluesky_handle': bluesky_handle,
+            'bluesky_password': bluesky_password,
+            'processing_type': processing_type,
+            'min_delay': min_delay,
+            'max_delay': max_delay,
+            'queued_at': datetime.utcnow().isoformat(),
+            'status': 'queued'
+        }
+        
+        # Add to queue
+        bot_queue.append(task)
+        bot_progress['queue_size'] = len(bot_queue)
+        
+        logger.info(f"Queued task {task['id']} with {len(post_urls)} posts")
+        
+        # Auto-save credentials (placeholder)
+        user_session = request.headers.get('X-User-Session', 'default_session')
+        save_credentials_to_database(user_session, bluesky_handle, bluesky_password, post_urls, message_templates)
+        
+        return jsonify({
+            'success': True,
+            'task_id': task['id'],
+            'queue_position': len(bot_queue),
+            'message': 'Task queued successfully'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error queuing task: {e}")
+        return jsonify({'error': str(e)}), 500
 
+@app.route('/start_bot', methods=['POST'])
+def start_bot():
+    """Compatibility endpoint - redirects to queue_task"""
+    return queue_task()
+
+@app.route('/status')
+def get_status():
+    """Get current bot status"""
+    return jsonify({
+        'is_processing': is_processing,
+        'queue_size': len(bot_queue),
+        'current_task': current_task['id'] if current_task else None,
+        'status': bot_progress['status']
+    })
+
+@app.route('/progress')
+def get_progress():
+    """Get current progress"""
+    return jsonify(bot_progress)
+
+@app.route('/detailed_progress')
+def detailed_progress():
+    """Get detailed progress with statistics"""
+    try:
+        # Get database statistics
+        with app.app_context():
+            total_bot_runs = BotRun.query.count()
+            completed_runs = BotRun.query.filter_by(status='completed').count()
+            failed_runs = BotRun.query.filter_by(status='failed').count()
+            
+        detailed_stats = {
+            **bot_progress,
+            'database_stats': {
+                'total_bot_runs': total_bot_runs,
+                'completed_runs': completed_runs,
+                'failed_runs': failed_runs,
+                'success_rate': (completed_runs / total_bot_runs * 100) if total_bot_runs > 0 else 0
+            },
+            'runtime_stats': {
+                'session_uptime': (datetime.utcnow() - datetime.fromisoformat(bot_progress['session_start_time'])).total_seconds(),
+                'current_task_runtime': 0
+            }
+        }
+        
+        return jsonify(detailed_stats)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# 🛑 **الجزء المحذوف:** تم حذف الأسطر التي تبدأ بـ `if __name__ == '__main__':`
+# لأنها تسبب انهيار الخادم في بيئة Render.
