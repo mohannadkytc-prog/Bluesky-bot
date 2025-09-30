@@ -26,6 +26,8 @@ app.secret_key = 'always_on_bot_secret_key_2025'
 # Initialize database
 init_db(app)
 
+start_background_worker() 
+
 # Global bot state
 bot_queue = []
 current_task = None
