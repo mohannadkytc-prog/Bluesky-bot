@@ -1,198 +1,223 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ar" dir="rtl">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>🤖 Persistent Bluesky Bot</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-            color: #333;
-        }
-        .container {
-            max-width: 800px; margin: 0 auto;
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 20px; padding: 40px;
-            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-            margin-top: 20px;
-        }
-        .header { text-align: center; margin-bottom: 30px; }
-        .header h1 { color: #333; font-size: 28px; margin-bottom: 5px; }
-        .header p { color: #666; font-size: 14px; }
-        .alert { padding: 15px; margin-bottom: 20px; border-radius: 10px; font-size: 14px; }
-        .alert-info { background-color: #e0f7fa; color: #00bcd4; border: 1px solid #00bcd4; }
-        .status-box { background-color: #f0f4f8; border-left: 5px solid #667eea; margin-bottom: 20px; padding: 15px; border-radius: 10px; }
-        .detailed-progress { background: #fff; margin-bottom: 20px; border-radius: 10px; display: flex; flex-wrap: wrap; }
-        .progress-item { width: 50%; padding: 10px 15px; border-bottom: 1px solid #eee; }
-        .progress-item:nth-child(even) { border-left: 1px solid #eee; }
-        .progress-item label { display: block; font-size: 12px; color: #999; }
-        .form-group { margin-bottom: 15px; }
-        .form-group label { display: block; font-weight: bold; margin-bottom: 5px; color: #555; }
-        input[type="text"], input[type="password"], input[type="number"], textarea {
-            width: 100%; padding: 10px; border: 1px solid #ddd;
-            border-radius: 5px; font-size: 14px;
-        }
-        textarea { resize: vertical; }
-        .form-section {
-            padding: 20px; margin-bottom: 20px; border-radius: 10px;
-            background-color: #f7f7f7; border: 1px solid #eee;
-        }
-        .form-section h3 { margin-bottom: 15px; color: #667eea; border-bottom: 1px solid #eee; padding-bottom: 10px; }
-        .button-group button {
-            padding: 10px 20px; margin-right: 10px; border: none;
-            border-radius: 5px; cursor: pointer; font-weight: bold; color: white;
-        }
-        #queueTaskButton { background-color: #28a745; }
-        #stopTaskButton { background-color: #dc3545; }
-        #resumeTaskButton { background-color: #ffc107; }
-        #viewProgressButton { background-color: #17a2b8; }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>🤖 Persistent Bluesky Bot</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+      background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
+      min-height:100vh;padding:20px;color:#333
+    }
+    .container{
+      max-width:820px;margin:0 auto;background:rgba(255,255,255,.96);
+      border-radius:20px;padding:32px;box-shadow:0 20px 40px rgba(0,0,0,.1)
+    }
+    .header{text-align:center;margin-bottom:20px}
+    .header h1{font-size:28px;margin-bottom:6px;color:#333}
+    .header p{font-size:14px;color:#666}
+    .alert{padding:12px 14px;border-radius:10px;margin:14px 0;font-size:14px}
+    .alert-info{background:#e0f7fa;color:#00bcd4;border:1px solid #00bcd4}
+    .status-box{background:#f0f4f8;border-left:5px solid #667eea;padding:16px;border-radius:10px;margin:16px 0}
+    .detailed-progress{background:#fff;border:1px solid #eee;border-radius:10px;margin:16px 0}
+    .detailed-progress h3{margin:0;padding:14px;color:#764ba2;border-bottom:1px solid #eee}
+    .progress-grid{display:flex;flex-wrap:wrap}
+    .progress-item{width:50%;padding:12px 14px;border-bottom:1px solid #eee}
+    .progress-item:nth-child(even){border-left:1px solid #eee}
+    .progress-item label{display:block;font-size:12px;color:#999;margin-bottom:4px}
+    .form-section{background:#f7f7f7;border:1px solid #eee;border-radius:10px;padding:16px;margin:16px 0}
+    .form-section h3{margin-bottom:12px;color:#667eea}
+    .form-group{margin-bottom:12px}
+    .form-group label{display:block;font-weight:bold;color:#555;margin-bottom:6px}
+    input[type="text"],input[type="password"],input[type="number"],textarea,select{
+      width:100%;padding:10px;border:1px solid #ddd;border-radius:6px;font-size:14px
+    }
+    textarea{resize:vertical}
+    .button-group{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}
+    .button-group button{padding:10px 16px;border:none;border-radius:8px;color:#fff;font-weight:bold;cursor:pointer}
+    #queueTaskButton{background:#28a745}
+    #stopTaskButton{background:#dc3545}
+    #resumeTaskButton{background:#ffc107;color:#333}
+    #viewProgressButton{background:#17a2b8}
+    .note{font-size:12px;color:#777}
+  </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>🤖 Persistent Bluesky Bot</h1>
-            <p>يعمل بشكل مستمر في الخلفية، حتى عند إغلاق الصفحة</p>
-        </div>
-
-        <div class="alert alert-info">
-            <p><strong>تنويه:</strong> يعمل البوت بمجرد الضغط على "بدء المهمة". يرجى استخدام <strong>App Password</strong> وليس كلمة مرور الحساب العادية.</p>
-        </div>
-
-        <div class="status-box">
-            <h3 style="color:#667eea;">حالة الخدمة</h3>
-            <p><strong>حالة التشغيل:</strong> <span id="runStatus">Idle</span></p>
-            <p><strong>المهمة الحالية:</strong> <span id="currentTask">لا توجد مهمة</span></p>
-            <p><strong>تحديث الحالة:</strong> <span id="lastUpdated">--</span></p>
-        </div>
-
-        <div class="detailed-progress">
-            <h3 style="width:100%; padding:15px; margin:0; color:#764ba2;">📊 التقدم</h3>
-            <div class="progress-item"><label>منشورات مُنجزة</label><span id="totalPostsProcessed">0</span></div>
-            <div class="progress-item"><label>منشورات بالإجمالي</label><span id="totalPostsQueued">0</span></div>
-            <div class="progress-item"><label>المتابعون</label><span id="totalFollowers">0</span></div>
-            <div class="progress-item"><label>محاولات فاشلة</label><span id="failedRuns">0</span></div>
-            <div class="progress-item"><label>نسبة النجاح</label><span id="successRate">0%</span></div>
-            <div class="progress-item"><label>مدة التشغيل</label><span id="sessionUptime">--</span></div>
-            <div class="progress-item"><label>الوقت المتبقي</label><span id="remainingTime">--</span></div>
-            <div class="progress-item"><label>إجمالي الردود</label><span id="totalMentionsSent">0</span></div>
-        </div>
-
-        <form id="botForm">
-            <div class="form-section">
-                <h3>بيانات تسجيل الدخول</h3>
-                <div class="form-group">
-                    <label for="bluesky_handle">حساب بلوسكاي</label>
-                    <input type="text" id="bluesky_handle" placeholder="yourname.bsky.social">
-                </div>
-                <div class="form-group">
-                    <label for="bluesky_password">كلمة مرور التطبيق</label>
-                    <input type="password" id="bluesky_password" placeholder="App Password">
-                </div>
-            </div>
-
-            <div class="form-section">
-                <h3>رابط المنشور</h3>
-                <div class="form-group">
-                    <label for="post_url_1">Post URL</label>
-                    <input type="text" id="post_url_1" placeholder="https://bsky.app/profile/user/post/...">
-                </div>
-            </div>
-
-            <div class="form-section">
-                <h3>قوالب الرسائل (10)</h3>
-                <textarea id="message_template_1" rows="2" placeholder="رسالة 1"></textarea>
-                <textarea id="message_template_2" rows="2" placeholder="رسالة 2"></textarea>
-                <textarea id="message_template_3" rows="2" placeholder="رسالة 3"></textarea>
-                <textarea id="message_template_4" rows="2" placeholder="رسالة 4"></textarea>
-                <textarea id="message_template_5" rows="2" placeholder="رسالة 5"></textarea>
-                <textarea id="message_template_6" rows="2" placeholder="رسالة 6"></textarea>
-                <textarea id="message_template_7" rows="2" placeholder="رسالة 7"></textarea>
-                <textarea id="message_template_8" rows="2" placeholder="رسالة 8"></textarea>
-                <textarea id="message_template_9" rows="2" placeholder="رسالة 9"></textarea>
-                <textarea id="message_template_10" rows="2" placeholder="رسالة 10"></textarea>
-            </div>
-
-            <div class="form-section">
-                <h3>الإعدادات</h3>
-                <div class="form-group">
-                    <label for="processing_type">نوع المعالجة</label>
-                    <select id="processing_type">
-                        <option value="reposts">إعادة نشر + ردود</option>
-                        <option value="replies">ردود فقط</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label for="min_delay">أقل تأخير (ثواني)</label>
-                    <input type="number" id="min_delay" value="180">
-                </div>
-                <div class="form-group">
-                    <label for="max_delay">أقصى تأخير (ثواني)</label>
-                    <input type="number" id="max_delay" value="300">
-                </div>
-            </div>
-
-            <div class="button-group">
-                <button type="button" id="queueTaskButton" onclick="queueTask()">✅ بدء المهمة</button>
-                <button type="button" id="stopTaskButton" onclick="stopTask()">🛑 إيقاف</button>
-                <button type="button" id="resumeTaskButton" onclick="resumeTask()">▶️ استئناف</button>
-                <button type="button" id="viewProgressButton" onclick="updateStatus()">🔄 تحديث</button>
-            </div>
-            <div id="taskQueueStatus" style="margin-top:20px; font-weight:bold; color:#00bcd4;"></div>
-        </form>
+  <div class="container">
+    <div class="header">
+      <h1>🤖 Persistent Bluesky Bot</h1>
+      <p>يعمل بشكل مستمر في الخلفية، حتى عند إغلاق الصفحة</p>
     </div>
 
-    <script>
-        function getMessageTemplates() {
-            const msgs=[]; for(let i=1;i<=10;i++){ 
-                let val=document.getElementById('message_template_'+i).value.trim();
-                if(val) msgs.push(val);
-            } return msgs;
-        }
-        function queueTask() {
-            fetch('/queue_task',{method:'POST',headers:{'Content-Type':'application/json'},
-              body:JSON.stringify({
-                post_urls:[document.getElementById('post_url_1').value],
-                message_templates:getMessageTemplates(),
-                bluesky_handle:document.getElementById('bluesky_handle').value,
-                bluesky_password:document.getElementById('bluesky_password').value,
-                processing_type:document.getElementById('processing_type').value,
-                min_delay:parseInt(document.getElementById('min_delay').value),
-                max_delay:parseInt(document.getElementById('max_delay').value)
-              })})
-            .then(r=>r.json()).then(d=>{
-                document.getElementById('taskQueueStatus').textContent='✅ تم إرسال المهمة';
-                updateStatus();
-            }).catch(e=>{
-                document.getElementById('taskQueueStatus').textContent='❌ فشل في إرسال المهمة';
-            });
-        }
-        function stopTask(){ fetch('/stop_task').then(r=>r.json()).then(d=>{
-            document.getElementById('taskQueueStatus').textContent='🛑 المهمة توقفت'; updateStatus();
-        });}
-        function resumeTask(){ fetch('/resume_task').then(r=>r.json()).then(d=>{
-            document.getElementById('taskQueueStatus').textContent='▶️ المهمة استؤنفت'; updateStatus();
-        });}
-        function updateStatus(){ fetch('/detailed_progress').then(r=>r.json()).then(data=>{
-            document.getElementById('runStatus').textContent=data.runtime_stats.status||'Idle';
-            document.getElementById('currentTask').textContent=data.runtime_stats.current_task||'--';
-            document.getElementById('lastUpdated').textContent=new Date().toLocaleTimeString();
-            document.getElementById('totalPostsProcessed').textContent=data.bot_progress.completed_runs;
-            document.getElementById('totalPostsQueued').textContent=data.bot_progress.total_bot_runs;
-            document.getElementById('totalFollowers').textContent=data.bot_progress.total_followers||'0';
-            document.getElementById('failedRuns').textContent=data.bot_progress.failed_runs;
-            document.getElementById('successRate').textContent=(data.bot_progress.success_rate*100).toFixed(2)+'%';
-            document.getElementById('sessionUptime').textContent=data.runtime_stats.session_uptime;
-            document.getElementById('remainingTime').textContent=data.runtime_stats.current_task_runtime||'0s';
-            document.getElementById('totalMentionsSent').textContent=data.bot_progress.total_mentions_sent||'0';
-        }).catch(e=>{
-            document.getElementById('runStatus').textContent='❌ فشل التحديث';
-        });}
-        setInterval(updateStatus,5000); window.onload=updateStatus;
-    </script>
+    <div class="alert alert-info">
+      <strong>تنويه:</strong> يعمل البوت بمجرد الضغط على «بدء المهمة». استخدم <strong>App Password</strong> من إعدادات Bluesky وليس كلمة مرور الحساب العادية.
+    </div>
+
+    <div class="status-box">
+      <h3 style="color:#667eea">حالة الخدمة</h3>
+      <p><strong>حالة التشغيل:</strong> <span id="runStatus">Idle</span></p>
+      <p><strong>المهمة الحالية:</strong> <span id="currentTask">لا توجد مهمة قيد التشغيل</span></p>
+      <p><strong>تحديث الحالة:</strong> <span id="lastUpdated">--</span></p>
+    </div>
+
+    <div class="detailed-progress">
+      <h3>📊 التقدم المفصل</h3>
+      <div class="progress-grid">
+        <div class="progress-item"><label>تم إنجازه (مستخدمون)</label><span id="totalPostsProcessed">0</span></div>
+        <div class="progress-item"><label>الإجمالي (مستخدمون)</label><span id="totalPostsQueued">0</span></div>
+        <div class="progress-item"><label>المحاولات الفاشلة</label><span id="failedRuns">0</span></div>
+        <div class="progress-item"><label>نسبة النجاح</label><span id="successRate">0%</span></div>
+        <div class="progress-item"><label>زمن التشغيل المستمر</label><span id="sessionUptime">--</span></div>
+        <div class="progress-item"><label>الردود المرسلة</label><span id="totalMentionsSent">0</span></div>
+      </div>
+    </div>
+
+    <form id="botForm">
+      <div class="form-section">
+        <h3>بيانات تسجيل الدخول</h3>
+        <div class="form-group">
+          <label for="bluesky_handle">حساب بلوسكاي</label>
+          <input type="text" id="bluesky_handle" placeholder="yourname.bsky.social">
+        </div>
+        <div class="form-group">
+          <label for="bluesky_password">كلمة المرور (App Password)</label>
+          <input type="password" id="bluesky_password" placeholder="xxxx-xxxx-xxxx-xxxx">
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3>رابط المنشور المستهدف</h3>
+        <div class="form-group">
+          <label for="post_url_1">رابط المنشور (Post URL)</label>
+          <input type="text" id="post_url_1" placeholder="https://bsky.app/profile/handle/post/xxxxx">
+        </div>
+        <div class="form-group">
+          <label for="processing_type">نوع الجمهور المستهدف</label>
+          <select id="processing_type">
+            <option value="likes">الإعجابات (Likes)</option>
+            <option value="reposts">إعادة النشر (Reposts)</option>
+            <option value="both">الإعجابات + إعادة النشر</option>
+          </select>
+          <div class="note">يتم الرد على آخر منشور لكل مستخدم من الجمهور المختار</div>
+        </div>
+        <div class="form-group">
+          <label for="min_delay">الحد الأدنى للتأخير بالثواني (Min Delay)</label>
+          <input type="number" id="min_delay" value="180">
+        </div>
+        <div class="form-group">
+          <label for="max_delay">الحد الأقصى للتأخير بالثواني (Max Delay)</label>
+          <input type="number" id="max_delay" value="300">
+        </div>
+      </div>
+
+      <div class="form-section">
+        <h3>قوالب الرسائل (حتى 10 رسائل)</h3>
+        <textarea id="message_template_1" rows="2" placeholder="رسالة 1"></textarea>
+        <textarea id="message_template_2" rows="2" placeholder="رسالة 2"></textarea>
+        <textarea id="message_template_3" rows="2" placeholder="رسالة 3"></textarea>
+        <textarea id="message_template_4" rows="2" placeholder="رسالة 4"></textarea>
+        <textarea id="message_template_5" rows="2" placeholder="رسالة 5"></textarea>
+        <textarea id="message_template_6" rows="2" placeholder="رسالة 6"></textarea>
+        <textarea id="message_template_7" rows="2" placeholder="رسالة 7"></textarea>
+        <textarea id="message_template_8" rows="2" placeholder="رسالة 8"></textarea>
+        <textarea id="message_template_9" rows="2" placeholder="رسالة 9"></textarea>
+        <textarea id="message_template_10" rows="2" placeholder="رسالة 10"></textarea>
+        <div class="note">يتم اختيار رسالة عشوائية لكل مستخدم</div>
+      </div>
+
+      <div class="button-group">
+        <button type="button" id="queueTaskButton" onclick="queueTask()">✅ بدء المهمة</button>
+        <button type="button" id="stopTaskButton" onclick="stopTask()">🛑 إيقاف المهمة</button>
+        <button type="button" id="resumeTaskButton" onclick="resumeTask()">▶️ استئناف المهمة</button>
+        <button type="button" id="viewProgressButton" onclick="updateStatus()">🔄 تحديث الحالة</button>
+      </div>
+
+      <div id="taskQueueStatus" style="margin-top:14px;color:#00bcd4;font-weight:bold;"></div>
+    </form>
+  </div>
+
+  <script>
+    function getMessageTemplates() {
+      const arr = [];
+      for (let i = 1; i <= 10; i++) {
+        const el = document.getElementById('message_template_' + i);
+        if (el && el.value.trim()) arr.push(el.value.trim());
+      }
+      return arr;
+    }
+
+    function queueTask() {
+      const handle = document.getElementById('bluesky_handle').value.trim();
+      const pass = document.getElementById('bluesky_password').value.trim();
+      const url = document.getElementById('post_url_1').value.trim();
+
+      if (!handle || !pass || !url) {
+        alert('يرجى إدخال الحساب وكلمة المرور ورابط المنشور.');
+        return;
+      }
+
+      fetch('/queue_task', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          post_urls: [url],
+          message_templates: getMessageTemplates(),
+          bluesky_handle: handle,
+          bluesky_password: pass,
+          processing_type: document.getElementById('processing_type').value, // likes/reposts/both
+          min_delay: parseInt(document.getElementById('min_delay').value || '200', 10),
+          max_delay: parseInt(document.getElementById('max_delay').value || '250', 10)
+        })
+      })
+      .then(r => r.json())
+      .then(d => {
+        document.getElementById('taskQueueStatus').textContent = d.status || d.error || 'تم الإرسال';
+        updateStatus();
+      })
+      .catch(() => {
+        document.getElementById('taskQueueStatus').textContent = '❌ فشل في إرسال المهمة.';
+      });
+    }
+
+    function stopTask() {
+      fetch('/stop_task').then(r=>r.json()).then(d=>{
+        document.getElementById('taskQueueStatus').textContent = d.status || 'تم الإيقاف';
+        updateStatus();
+      });
+    }
+
+    function resumeTask() {
+      fetch('/resume_task').then(r=>r.json()).then(d=>{
+        document.getElementById('taskQueueStatus').textContent = d.status || 'تم الاستئناف';
+        updateStatus();
+      });
+    }
+
+    function updateStatus() {
+      fetch('/detailed_progress')
+        .then(r => r.json())
+        .then(data => {
+          document.getElementById('runStatus').textContent = data.runtime_stats.status || 'Idle';
+          document.getElementById('currentTask').textContent = data.runtime_stats.current_task || 'لا توجد مهمة';
+          document.getElementById('lastUpdated').textContent = new Date().toLocaleTimeString();
+
+          document.getElementById('totalPostsProcessed').textContent = data.bot_progress.completed_runs;
+          document.getElementById('totalPostsQueued').textContent = data.bot_progress.total_bot_runs;
+          document.getElementById('failedRuns').textContent = data.bot_progress.failed_runs;
+          document.getElementById('successRate').textContent = ((data.bot_progress.success_rate || 0) * 100).toFixed(2) + '%';
+          document.getElementById('sessionUptime').textContent = data.runtime_stats.session_uptime;
+          document.getElementById('totalMentionsSent').textContent = data.bot_progress.total_mentions_sent || 0;
+        })
+        .catch(() => {
+          document.getElementById('runStatus').textContent = '❌ فشل التحميل';
+        });
+    }
+
+    // تحديث كل 5 ثواني
+    setInterval(updateStatus, 5000);
+    window.onload = updateStatus;
+  </script>
 </body>
-    </html>
+            </html>
