@@ -41,42 +41,80 @@ class BlueSkyBot:
         self.client.login(self.config.bluesky_handle, self.config.bluesky_password)
 
     def process_posts(self, post_urls: List[str], messages: List[str], processing_type: str):
-        self.login()
+    from datetime import datetime, timezone
 
-        completed = 0
-        failed = 0
-        for url in post_urls:
-            try:
-                post_ref = resolve_post_from_url(self.client, url)
-                if not post_ref:
-                    log.error(f"❌ لم أستطع解析 الرابط: {url}")
-                    failed += 1
-                    continue
+    self.login()
 
-                msg = random.choice(messages)
+    completed = 0
+    failed = 0
 
-                if processing_type in ("reposts", "both", "reposts_and_replies"):
-                    self.client.repost(post_ref)
-                    log.info(f"🔁 تم إعادة النشر: {url}")
-
-                if processing_type in ("replies", "both", "reposts_and_replies"):
-                    self.client.send_post(text=msg, reply_to=post_ref)
-                    log.info(f"💬 تم الرد برسالة: {msg}")
-
-                completed += 1
-                delay = random.randint(self.config.min_delay, self.config.max_delay)
-                log.info(f"⏳ الانتظار {delay} ثانية قبل المهمة التالية")
-                time.sleep(delay)
-
-                if self.progress_cb:
-                    self.progress_cb(completed, failed)
-
-            except Exception as e:
-                log.error(f"⚠️ خطأ أثناء المعالجة: {e}")
+    for url in post_urls:
+        try:
+            post_ref = resolve_post_from_url(self.client, url)
+            if not post_ref:
+                log.error(f"❌ فشل حلّ الرابط: {url}")
                 failed += 1
+                continue
 
-        return {"completed": completed, "failed": failed}
+            uri = post_ref["uri"]
+            cid = post_ref["cid"]
 
+            # 1) إعادة النشر (إذا مطلوبة)
+            if processing_type in ("reposts", "both", "reposts_and_replies"):
+                try:
+                    self.client.com.atproto.repo.create_record({
+                        "repo": self.client.me.did,
+                        "collection": "app.bsky.feed.repost",
+                        "record": {
+                            "$type": "app.bsky.feed.repost",
+                            "subject": {"uri": uri, "cid": cid},
+                            "createdAt": datetime.now(timezone.utc).isoformat(),
+                        },
+                    })
+                    log.info(f"🔁 Repost OK: {url}")
+                except Exception as e:
+                    log.error(f"⚠️ Repost failed: {e}")
+                    failed += 1
+                    # لا نوقف؛ نكمل للرد إن كان مطلوب
+
+            # 2) الرد (إذا مطلوب)
+            if processing_type in ("replies", "both", "reposts_and_replies"):
+                msg = random.choice(messages) if messages else "🙏"
+                try:
+                    self.client.com.atproto.repo.create_record({
+                        "repo": self.client.me.did,
+                        "collection": "app.bsky.feed.post",
+                        "record": {
+                            "$type": "app.bsky.feed.post",
+                            "text": msg,
+                            "createdAt": datetime.now(timezone.utc).isoformat(),
+                            "reply": {
+                                "root": {"uri": uri, "cid": cid},
+                                "parent": {"uri": uri, "cid": cid},
+                            },
+                        },
+                    })
+                    log.info(f"💬 Reply OK: {msg[:40]}…")
+                except Exception as e:
+                    log.error(f"⚠️ Reply failed: {e}")
+                    failed += 1
+                    continue  # للمنشور الحالي
+
+            completed += 1
+
+            # تأخير بين العمليات
+            delay = random.randint(self.config.min_delay, self.config.max_delay)
+            log.info(f"⏳ الانتظار {delay} ث قبل المهمة التالية")
+            time.sleep(delay)
+
+            if self.progress_cb:
+                self.progress_cb(completed, failed)
+
+        except Exception as e:
+            log.error(f"⚠️ خطأ عام أثناء المعالجة: {e}")
+            failed += 1
+
+    return {"completed": completed, "failed": failed}
 
 # ================== الويب سيرفر ==================
 app = Flask(__name__)
