@@ -3,35 +3,198 @@ services:
     name: bluesky-bot-1
     env: python
     plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
-    branch: main
-    repo: https://github.com/mohannadkytc-pro/Bluesky-bot
+    healthCheckPath: "/"
 
   - type: web
     name: bluesky-bot-2
     env: python
     plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
-    branch: main
-    repo: https://github.com/mohannadkytc-pro/Bluesky-bot
+    healthCheckPath: "/"
 
   - type: web
     name: bluesky-bot-3
     env: python
     plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
-    branch: main
-    repo: https://github.com/mohannadkytc-pro/Bluesky-bot
+    healthCheckPath: "/"
 
-  # كرر نفس البلوك لغاية 20
+  - type: web
+    name: bluesky-bot-4
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-5
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-6
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-7
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-8
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-9
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-10
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-11
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-12
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-13
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-14
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-15
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-16
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-17
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-18
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
+  - type: web
+    name: bluesky-bot-19
+    env: python
+    plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    healthCheckPath: "/"
+
   - type: web
     name: bluesky-bot-20
     env: python
     plan: free
+    repo: https://github.com/mohannadkytc-prog/Bluesky-bot
+    branch: main
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
-    branch: main
-    repo: https://github.com/mohannadkytc-pro/Bluesky-bot
+    healthCheckPath: "/"
