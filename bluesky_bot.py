@@ -1,9 +1,9 @@
 """
 Bluesky Bot + Flask wrapper (audience processing: likes/reposts)
-- يقبل post_url أو post_urls[] (نأخذ أول واحد)
-- يقبل messages أو message_templates
-- نوع المعالجة: likes / reposts / both
-- مسارات: / (الواجهة) /queue_task /detailed_progress /stop_task /resume_task
+- يعطيك المعالجة على كل معجبي المنشور أو كل من أعادوا نشره (أو الاثنين)
+- يمرّ على المستخدمين واحدًا واحدًا: يفتح آخر منشور لهم ويردّ برسالة من القوالب
+- ينتظر بين كل مستخدم والذي بعده ضمن المدى الذي تحدديه
+- المسارات: / (واجهة) /queue_task /detailed_progress /stop_task /resume_task
 """
 
 import os
@@ -12,27 +12,26 @@ import random
 import logging
 import threading
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request
 
 from atproto import Client
 from atproto.exceptions import AtProtocolError
-from utils import resolve_post_from_url  # يفترض موجود عندك (كما كان)
+from utils import resolve_post_from_url  # موجود عندك من قبل
 
 # إعداد اللوج
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bluesky-bot")
 
-
-# ================== منطق البوت ==================
+# ================== إعدادات البوت ==================
 @dataclass
 class Config:
     bluesky_handle: str
     bluesky_password: str
-    min_delay: int = 200
-    max_delay: int = 250
+    min_delay: int = 180
+    max_delay: int = 300
 
 
 class BlueSkyBot:
@@ -40,14 +39,14 @@ class BlueSkyBot:
         self.config = config
         self.client = Client()
         self.progress_cb = None
-        self.stop_flag = False  # لإيقاف الحلقة بأمان
+        self.stop_flag = False  # لإيقاف المهمة بأمان
 
-    # --------- مصادقة ----------
+    # ---------- المصادقة ----------
     def login(self) -> None:
         log.info(f"🔑 تسجيل الدخول: {self.config.bluesky_handle}")
         self.client.login(self.config.bluesky_handle, self.config.bluesky_password)
 
-    # --------- جلب info للبوست ----------
+    # ---------- حلّ رابط المنشور ----------
     def _resolve_post(self, post_url: str) -> Optional[Dict[str, str]]:
         try:
             return resolve_post_from_url(self.client, post_url)
@@ -55,12 +54,12 @@ class BlueSkyBot:
             log.error(f"❌ فشل حلّ رابط المنشور: {e}")
             return None
 
-    # --------- جلب المعجبين ----------
-    def get_likers(self, post_uri: str, post_cid: str) -> List[Dict]:
+    # ---------- جلب كل المعجبين (مع ترقيم الصفحات) ----------
+    def get_likers(self, post_uri: str) -> List[Dict]:
         likers: List[Dict] = []
         cursor = None
         while True:
-            params = {"uri": post_uri, "cid": post_cid, "limit": 100}
+            params = {"uri": post_uri, "limit": 100}
             if cursor:
                 params["cursor"] = cursor
             res = self.client.app.bsky.feed.get_likes(params)
@@ -68,16 +67,14 @@ class BlueSkyBot:
                 break
             for like in res.likes:
                 actor = like.actor
-                likers.append(
-                    {"handle": actor.handle, "display_name": actor.display_name, "did": actor.did}
-                )
+                likers.append({"handle": actor.handle, "display_name": actor.display_name, "did": actor.did})
             cursor = getattr(res, "cursor", None)
             if not cursor:
                 break
         log.info(f"👍 عدد المعجبين: {len(likers)}")
         return likers
 
-    # --------- جلب من عملوا إعادة نشر ----------
+    # ---------- جلب كل من أعادوا النشر (مع ترقيم الصفحات) ----------
     def get_reposters(self, post_uri: str, post_cid: str) -> List[Dict]:
         reposters: List[Dict] = []
         cursor = None
@@ -89,16 +86,14 @@ class BlueSkyBot:
             if not getattr(res, "reposted_by", None):
                 break
             for user in res.reposted_by:
-                reposters.append(
-                    {"handle": user.handle, "display_name": user.display_name, "did": user.did}
-                )
+                reposters.append({"handle": user.handle, "display_name": user.display_name, "did": user.did})
             cursor = getattr(res, "cursor", None)
             if not cursor:
                 break
         log.info(f"🔁 عدد من أعادوا النشر: {len(reposters)}")
         return reposters
 
-    # --------- آخر منشور/رد للمستخدم ----------
+    # ---------- آخر منشور/رد للمستخدم ----------
     def fetch_latest_post(self, handle: str) -> Optional[Dict]:
         try:
             res = self.client.app.bsky.feed.get_author_feed(
@@ -110,7 +105,7 @@ class BlueSkyBot:
                 }
             )
             for item in res.feed:
-                # نتجنب العناصر الناتجة عن Repost (نريد منشور أصلي أو رد)
+                # نتجنب Reposts: نريد منشورًا أصليًّا أو ردًّا
                 if getattr(item, "reason", None):
                     continue
                 post = item.post
@@ -125,7 +120,7 @@ class BlueSkyBot:
             log.error(f"⚠️ فشل جلب آخر منشور @{handle}: {e}")
             return None
 
-    # --------- الرد ----------
+    # ---------- إرسال رد ----------
     def reply_to_post(self, target_post: Dict, text: str) -> bool:
         try:
             self.client.com.atproto.repo.create_record(
@@ -148,68 +143,46 @@ class BlueSkyBot:
             log.error(f"❌ فشل الرد: {e}")
             return False
 
-    # --------- إعادة نشر (اختياري) ----------
-    def repost(self, post_uri: str, post_cid: str) -> bool:
-        try:
-            self.client.com.atproto.repo.create_record(
-                {
-                    "repo": self.client.me.did,
-                    "collection": "app.bsky.feed.repost",
-                    "record": {
-                        "$type": "app.bsky.feed.repost",
-                        "subject": {"uri": post_uri, "cid": post_cid},
-                        "createdAt": datetime.now(timezone.utc).isoformat(),
-                    },
-                }
-            )
-            return True
-        except Exception as e:
-            log.error(f"⚠️ فشل إعادة النشر: {e}")
-            return False
-
-    # --------- المعالجة الأساسية بحسب فكرتك ----------
+    # ---------- منطقك: معالجة الجمهور واحدًا واحدًا ----------
     def process_audience(
         self,
         post_url: str,
         messages: List[str],
-        mode: str = "likes",  # "likes" أو "reposts" أو "both"
+        mode: str = "likes",          # "likes" أو "reposts" أو "both"
         min_delay: int = 180,
         max_delay: int = 300,
     ) -> Dict[str, int]:
-        """
-        - يأخذ منشور
-        - يجمع الجمهور (معجبين/معيدي نشر)
-        - يمر عليهم واحد واحد ويرد على آخر منشور لهم مع انتظار بين كل رد
-        """
+
         self.login()
 
         ref = self._resolve_post(post_url)
         if not ref:
             return {"completed": 0, "failed": 1}
 
-        uri, cid = ref["uri"], ref["cid"]
+        post_uri, post_cid = ref["uri"], ref["cid"]
 
+        # اجمع الجمهور حسب الوضع المختار
         audience: List[Dict] = []
         if mode in ("likes", "both"):
-            audience.extend(self.get_likers(uri, cid))
+            audience.extend(self.get_likers(post_uri))
         if mode in ("reposts", "both"):
-            audience.extend(self.get_reposters(uri, cid))
+            audience.extend(self.get_reposters(post_uri, post_cid))
 
-        # إزالة التكرارات حسب الـ handle
+        # إزالة المكرر حسب الـ handle
         seen = set()
-        unique_users: List[Dict] = []
+        uniq_users: List[Dict] = []
         for u in audience:
             if u["handle"] not in seen:
                 seen.add(u["handle"])
-                unique_users.append(u)
+                uniq_users.append(u)
 
-        total = len(unique_users)
-        log.info(f"👥 العدد المستهدف: {total}")
+        total = len(uniq_users)
+        log.info(f"👥 الجمهور المستهدف: {total} مستخدم")
 
         completed = 0
         failed = 0
 
-        for idx, user in enumerate(unique_users, start=1):
+        for idx, user in enumerate(uniq_users, start=1):
             if self.stop_flag:
                 log.warning("⛔ تم إيقاف المهمة بطلب المستخدم.")
                 break
@@ -217,7 +190,7 @@ class BlueSkyBot:
             handle = user["handle"]
             latest = self.fetch_latest_post(handle)
             if not latest:
-                log.info(f"⚠️ @{handle} لا يملك منشورات مناسبة — نتجاوز")
+                log.info(f"⚠️ @{handle} لا يملك منشورات مناسبة — تخطٍ")
                 failed += 1
                 if self.progress_cb:
                     self.progress_cb(completed, failed)
@@ -228,12 +201,11 @@ class BlueSkyBot:
 
             if ok:
                 completed += 1
-                # عدّاد يظهر في الواجهة
                 try:
                     bot_progress["total_mentions_sent"] = bot_progress.get("total_mentions_sent", 0) + 1
                 except Exception:
                     pass
-                log.info(f"✅ [{idx}/{total}] ردّينا على @{handle}")
+                log.info(f"✅ [{idx}/{total}] تم الرد على @{handle}")
             else:
                 failed += 1
                 log.info(f"❌ [{idx}/{total}] فشل الرد على @{handle}")
@@ -290,7 +262,7 @@ def queue_task():
     data = request.get_json(force=True)
     log.info(f"📥 Payload: {data}")
 
-    # الحقول
+    # الحقول (ندعم أسماء مرنة كما اتفقنا)
     post_urls = data.get("post_urls") or [data.get("post_url")]
     post_urls = [u for u in (post_urls or []) if u]
     target_post = post_urls[0] if post_urls else None
@@ -300,11 +272,11 @@ def queue_task():
     bluesky_handle = data.get("bluesky_handle") or os.getenv("BLUESKY_HANDLE") or os.getenv("BSKY_HANDLE")
     bluesky_password = data.get("bluesky_password") or os.getenv("BLUESKY_PASSWORD") or os.getenv("BSKY_PASSWORD")
 
-    # نوع المعالجة من الواجهة: likes / reposts / both
+    # نوع الجمهور: likes / reposts / both
     processing_type = data.get("processing_type", "likes")
 
-    min_delay = int(data.get("min_delay", 200))
-    max_delay = int(data.get("max_delay", 250))
+    min_delay = int(data.get("min_delay", 180))
+    max_delay = int(data.get("max_delay", 300))
 
     if not bluesky_handle or not bluesky_password or not target_post:
         return jsonify({"error": "❌ البيانات ناقصة (handle/password/post_url)"}), 400
@@ -320,14 +292,13 @@ def queue_task():
     )
     bot_instance = BlueSkyBot(config)
 
-    # عامل تشغيل بالخلفية
+    # عامل تشغيل في الخلفية
     def run_bot():
         start = time.time()
         runtime_stats["status"] = "Running"
         runtime_stats["current_task"] = "Processing audience"
         bot_instance.stop_flag = False
 
-        # كولباك للتقدم
         def cb(done, failed):
             update_progress(done, failed)
 
@@ -352,7 +323,6 @@ def queue_task():
 
     return jsonify({"status": "✅ المهمة بدأت"})
 
-
 @app.route("/stop_task", methods=["GET", "POST"])
 def stop_task():
     if bot_instance:
@@ -360,22 +330,18 @@ def stop_task():
     runtime_stats["status"] = "Stopped"
     return jsonify({"status": "🛑 تم الإيقاف"})
 
-
 @app.route("/resume_task", methods=["GET", "POST"])
 def resume_task():
-    # الاستئناف يكون بكيو مهمة جديدة عادةً؛ هنا نزيل العلم فقط
     if bot_instance:
         bot_instance.stop_flag = False
     runtime_stats["status"] = "Running"
     return jsonify({"status": "▶️ تم الاستئناف"})
 
-
 @app.route("/detailed_progress")
 def detailed_progress():
     return jsonify({"runtime_stats": runtime_stats, "bot_progress": bot_progress})
 
-
-# Aliases اختيارية
+# Aliases
 @app.post("/queue")
 def queue_alias():
     return queue_task()
@@ -383,7 +349,6 @@ def queue_alias():
 @app.get("/progress")
 def progress_alias():
     return detailed_progress()
-
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 10000))
