@@ -1,262 +1,210 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>🤖 Persistent Bluesky Bot</title>
+  <title>Persistent Bluesky Bot</title>
   <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{
-      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
-      background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);
-      min-height:100vh;padding:24px;color:#1f2937
-    }
-    .container{
-      max-width:960px;margin:0 auto;background:#fff;backdrop-filter:blur(4px);
-      border-radius:18px;padding:28px;box-shadow:0 18px 40px rgba(0,0,0,.12)
-    }
-    h1{font-size:26px;margin-bottom:8px;color:#111827}
-    .sub{color:#6b7280;margin-bottom:18px}
-    .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
-    .card{
-      border:1px solid #e5e7eb;border-radius:14px;padding:18px;background:#fafafa
-    }
-    .card h3{font-size:16px;margin-bottom:10px;color:#4338ca}
-    label{display:block;font-weight:600;margin-bottom:6px}
-    input[type="text"],input[type="password"],input[type="number"],textarea,select{
-      width:100%;border:1px solid #e5e7eb;border-radius:10px;padding:10px 12px;
-      font-size:14px;background:#fff
-    }
-    textarea{min-height:62px;resize:vertical}
-    .muted{color:#6b7280;font-size:12px;margin-top:4px}
-    .btns{display:flex;gap:10px;flex-wrap:wrap}
-    button{
-      border:0;border-radius:10px;padding:10px 14px;font-weight:700;color:#fff;cursor:pointer
-    }
-    .primary{background:#10b981}
-    .danger{background:#ef4444}
-    .warn{background:#f59e0b}
-    .info{background:#3b82f6}
-    .status{
-      background:#ecfeff;border:1px solid #22d3ee;color:#155e75;
-      padding:12px;border-radius:12px;margin:10px 0;font-weight:600
-    }
-    .kv{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
-    .kv div{
-      background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:10px
-    }
-    .kv small{display:block;color:#6b7280;font-size:12px;margin-bottom:4px}
-    .footer-note{color:#6b7280;font-size:12px;margin-top:10px}
-    @media (max-width:800px){.grid{grid-template-columns:1fr}}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif;background:#f5f7ff;margin:0;color:#222}
+    .wrap{max-width:900px;margin:24px auto;padding:0 16px}
+    .card{background:#fff;border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,.08);padding:22px;margin:18px 0}
+    h1{font-size:40px;margin:8px 0 0;text-align:center}
+    .note{background:#e7f6ff;border:1px dashed #7cc4ff;padding:16px;border-radius:12px;margin-top:14px;color:#044d6b}
+    label.label{display:block;margin:8px 0 6px;font-weight:600}
+    input,textarea,select{width:100%;box-sizing:border-box;border:1px solid #d7dbee;border-radius:10px;padding:10px 12px;font-size:16px;background:#fff}
+    textarea{min-height:90px;resize:vertical;white-space:pre-wrap}
+    .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+    .grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+    .btn{border:0;border-radius:12px;padding:12px 14px;font-size:16px;cursor:pointer}
+    .btn-primary{background:#28c76f;color:#fff}
+    .btn-warn{background:#ff5252;color:#fff}
+    .btn-ghost{background:#eef3ff}
+    .row{display:flex;gap:10px;flex-wrap:wrap}
+    .kpi{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
+    .kpi .box{background:#fff;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,.06);padding:14px}
+    .box h4{margin:0 0 6px;font-size:14px;color:#666}
+    .box .big{font-size:22px;font-weight:700}
+    .section-title{font-size:20px;margin:10px 0 6px}
+    small.muted{color:#6b7280}
   </style>
 </head>
 <body>
-  <div class="container">
-    <h1>🤖 Persistent Bluesky Bot</h1>
-    <p class="sub">يشغّل الردود/إعادة النشر بشكل متتابع مع حفظ التقدّم في /data</p>
+  <div class="wrap">
+    <h1>Persistent Bluesky Bot 🤖</h1>
+    <div class="note">
+      تنويه: اضغطي «بدء المهمة» بعد إدخال البيانات. ينصح باستخدام
+      <b>App Password</b> من إعدادات Bluesky وليس كلمة المرور العادية.
+    </div>
 
-    <div id="flash" class="status" style="display:none;"></div>
-
-    <div class="grid">
-      <!-- بيانات الدخول -->
-      <div class="card">
-        <h3>بيانات تسجيل الدخول</h3>
-        <label for="bluesky_handle">الحساب (Handle)</label>
-        <input id="bluesky_handle" type="text" placeholder="user.bsky.social" />
-        <label for="bluesky_password" style="margin-top:10px;">كلمة مرور التطبيق (App Password)</label>
-        <input id="bluesky_password" type="password" placeholder="xxxx-xxxx-xxxx-xxxx" />
-        <p class="muted">⚠️ استخدمي App Password من إعدادات Bluesky وليس كلمة المرور العادية.</p>
+    <!-- بيانات الدخول + الروابط + الرسائل -->
+    <div class="card">
+      <h3 class="section-title">بيانات تسجيل الدخول</h3>
+      <div class="grid">
+        <div>
+          <label class="label">حساب بلوسكاي</label>
+          <input id="bluesky_handle" placeholder="example.bsky.social" />
+        </div>
+        <div>
+          <label class="label">كلمة المرور (App Password)</label>
+          <input id="bluesky_password" type="password" placeholder="xxxx-xxxx-xxxx-xxxx" />
+        </div>
       </div>
 
-      <!-- الروابط -->
-      <div class="card">
-        <h3>روابط المنشورات</h3>
-        <label for="post_urls">ضعي رابط منشور أو أكثر (كل سطر رابط):</label>
-        <textarea id="post_urls" placeholder="https://bsky.app/profile/USER/post/POSTID"></textarea>
-        <p class="muted">يمكنك إضافة أكثر من رابط—سطر لكل رابط. سيعالجها البوت بالتسلسل.</p>
+      <h3 class="section-title">روابط المنشورات المستهدفة</h3>
+      <textarea id="post_urls" placeholder="ضعي كل رابط بسطر مستقل"></textarea>
+
+      <h3 class="section-title">قائمة الرسائل (سيتم اختيار رسالة عشوائية لكل رد)</h3>
+      <div class="grid-3">
+        <textarea class="msg" placeholder="الرسالة 1"></textarea>
+        <textarea class="msg" placeholder="الرسالة 2"></textarea>
+        <textarea class="msg" placeholder="الرسالة 3"></textarea>
+        <textarea class="msg" placeholder="الرسالة 4"></textarea>
+        <textarea class="msg" placeholder="الرسالة 5"></textarea>
+        <textarea class="msg" placeholder="الرسالة 6"></textarea>
+        <textarea class="msg" placeholder="الرسالة 7"></textarea>
+        <textarea class="msg" placeholder="الرسالة 8"></textarea>
+        <textarea class="msg" placeholder="الرسالة 9"></textarea>
+      </div>
+      <small class="muted">اتركي أي خانة لا تحتاجينها فارغة.</small>
+    </div>
+
+    <!-- الإعدادات -->
+    <div class="card">
+      <h3 class="section-title">الإعدادات</h3>
+
+      <label class="label">مصدر الجمهور</label>
+      <select id="audience_type">
+        <option value="likers">المعجبون بالمنشور (Likers)</option>
+        <option value="reposters">معيدو النشر (Reposters)</option>
+        <option value="both">المعجبون + معيدو النشر</option>
+      </select>
+
+      <div class="grid" style="margin-top:10px">
+        <div>
+          <label class="label">الحد الأدنى للتأخير (ثوان)</label>
+          <input id="min_delay" placeholder="مثال 180" value="180" />
+        </div>
+        <div>
+          <label class="label">الحد الأقصى للتأخير (ثوان)</label>
+          <input id="max_delay" placeholder="مثال 300" value="300" />
+        </div>
       </div>
 
-      <!-- الرسائل -->
-      <div class="card">
-        <h3>قوالب الرسائل (2–10 رسائل)</h3>
-        <div class="grid" style="grid-template-columns:1fr 1fr; gap:10px">
-          <textarea id="msg1" placeholder="الرسالة 1"></textarea>
-          <textarea id="msg2" placeholder="الرسالة 2"></textarea>
-          <textarea id="msg3" placeholder="الرسالة 3 (اختياري)"></textarea>
-          <textarea id="msg4" placeholder="الرسالة 4 (اختياري)"></textarea>
-          <textarea id="msg5" placeholder="الرسالة 5 (اختياري)"></textarea>
-          <textarea id="msg6" placeholder="الرسالة 6 (اختياري)"></textarea>
-          <textarea id="msg7" placeholder="الرسالة 7 (اختياري)"></textarea>
-          <textarea id="msg8" placeholder="الرسالة 8 (اختياري)"></textarea>
-          <textarea id="msg9" placeholder="الرسالة 9 (اختياري)"></textarea>
-          <textarea id="msg10" placeholder="الرسالة 10 (اختياري)"></textarea>
-        </div>
-        <p class="muted">سيختار البوت رسالة عشوائية من القائمة لكل رد.</p>
+      <div class="row" style="margin-top:14px">
+        <button class="btn btn-warn" onclick="stopTask()">إيقاف</button>
+        <button class="btn btn-primary" onclick="startTask()">بدء المهمة ✅</button>
+        <button class="btn btn-ghost" onclick="refreshStatus()">تحديث الحالة 🔄</button>
       </div>
 
-      <!-- الإعدادات -->
-      <div class="card">
-        <h3>الإعدادات</h3>
-        <label for="processing_type">نوع المعالجة</label>
-        <select id="processing_type">
-          <option value="replies">الردود فقط (Replies)</option>
-          <option value="reposts">إعادة نشر فقط (Reposts)</option>
-          <option value="both">ردود + إعادة نشر</option>
-        </select>
-
-        <div class="grid" style="margin-top:10px;gap:10px">
-          <div>
-            <label for="min_delay">الحد الأدنى للتأخير (ثوانٍ)</label>
-            <input id="min_delay" type="number" value="180" />
-          </div>
-          <div>
-            <label for="max_delay">الحد الأقصى للتأخير (ثوانٍ)</label>
-            <input id="max_delay" type="number" value="300" />
-          </div>
-        </div>
-
-        <div class="btns" style="margin-top:14px">
-          <button class="primary" onclick="queueTask()">✅ بدء المهمة</button>
-          <button class="danger" onclick="stopTask()">🛑 إيقاف</button>
-          <button class="warn" onclick="resumeTask()">▶️ استئناف</button>
-          <button class="info" onclick="refreshStatus()">🔄 تحديث الحالة</button>
-        </div>
-        <p class="footer-note">يحفظ التقدّم تلقائيًا في <code>/data/progress.json</code> لكل حساب/رابط.</p>
+      <div style="margin-top:8px">
+        <small class="muted">سيحفظ التقدم تلقائيًا في: <code id="progress_path">{{ progress_path or 'data/progress.json' }}</code></small>
       </div>
     </div>
 
-    <!-- الحالة العامة -->
-    <div class="card" style="margin-top:16px">
-      <h3>حالة التشغيل</h3>
-      <div class="kv">
-        <div><small>الحالة</small><b id="runStatus">Idle</b></div>
-        <div><small>المهمة الحالية</small><b id="currentTask">—</b></div>
-        <div><small>زمن الجلسة</small><b id="sessionUptime">0s</b></div>
-        <div><small>معدّل النجاح</small><b id="successRate">0%</b></div>
-        <div><small>منجز</small><b id="completedRuns">0</b></div>
-        <div><small>فشل</small><b id="failedRuns">0</b></div>
-        <div><small>إجمالي المحاولات</small><b id="totalRuns">0</b></div>
-        <div><small>آخر تحديث</small><b id="lastUpdated">—</b></div>
+    <!-- حالة التشغيل -->
+    <div class="card">
+      <h3 class="section-title">حالة التشغيل</h3>
+      <div class="kpi">
+        <div class="box">
+          <h4>الحالة</h4>
+          <div class="big" id="k_status">Idle</div>
+        </div>
+        <div class="box">
+          <h4>المهمة الحالية</h4>
+          <div class="big" id="k_task">—</div>
+        </div>
+        <div class="box">
+          <h4>منجز</h4>
+          <div class="big" id="k_done">0</div>
+        </div>
+        <div class="box">
+          <h4>فشل</h4>
+          <div class="big" id="k_fail">0</div>
+        </div>
+        <div class="box">
+          <h4>معدل النجاح</h4>
+          <div class="big" id="k_rate">0%</div>
+        </div>
+        <div class="box">
+          <h4>زمن الجلسة</h4>
+          <div class="big" id="k_uptime">0s</div>
+        </div>
       </div>
     </div>
   </div>
 
   <script>
-    function flash(msg, ok=true){
-      const el = document.getElementById('flash');
-      el.textContent = msg;
-      el.style.display = 'block';
-      el.style.background = ok ? '#ecfeff' : '#fee2e2';
-      el.style.borderColor = ok ? '#22d3ee' : '#ef4444';
-      el.style.color = ok ? '#155e75' : '#7f1d1d';
-      setTimeout(()=>{ el.style.display='none'; }, 4500);
-    }
+    async function startTask() {
+      const handle = document.getElementById('bluesky_handle').value.trim();
+      const password = document.getElementById('bluesky_password').value.trim();
+      const min_delay = document.getElementById('min_delay').value.trim();
+      const max_delay = document.getElementById('max_delay').value.trim();
+      const audience_type = document.getElementById('audience_type').value;
 
-    function getMessageTemplates(){
-      const ids = ['msg1','msg2','msg3','msg4','msg5','msg6','msg7','msg8','msg9','msg10'];
-      const out = [];
-      ids.forEach(id=>{
-        const v = (document.getElementById(id).value || '').trim();
-        if(v) out.push(v);
-      });
-      return out;
-    }
+      const urls_raw = document.getElementById('post_urls').value.trim();
+      const post_urls = urls_raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 
-    function getPostUrls(){
-      const raw = (document.getElementById('post_urls').value || '').trim();
-      if(!raw) return [];
-      // كل سطر رابط
-      return raw.split('\n').map(s=>s.trim()).filter(Boolean);
-    }
+      const msg_nodes = document.querySelectorAll('.msg');
+      const message_templates = Array.from(msg_nodes).map(n => n.value.trim()).filter(Boolean);
 
-    async function queueTask(){
-      const bluesky_handle = document.getElementById('bluesky_handle').value.trim();
-      const bluesky_password = document.getElementById('bluesky_password').value.trim();
-      const post_urls = getPostUrls();
-      const message_templates = getMessageTemplates();
-      const processing_type = document.getElementById('processing_type').value;
-      const min_delay = parseInt(document.getElementById('min_delay').value || '180', 10);
-      const max_delay = parseInt(document.getElementById('max_delay').value || '300', 10);
+      const payload = {
+        bluesky_handle: handle,
+        bluesky_password: password,
+        post_urls,
+        message_templates,
+        min_delay: parseInt(min_delay) || 180,
+        max_delay: parseInt(max_delay) || 300,
+        audience_type // likers | reposters | both
+      };
 
-      if(!bluesky_handle || !bluesky_password || post_urls.length===0){
-        flash('❌ يرجى تعبئة الحساب وكلمة المرور ووضع رابط/روابط منشور.', false);
-        return;
-      }
-
-      try{
+      try {
         const res = await fetch('/queue_task', {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({
-            bluesky_handle, bluesky_password,
-            post_urls, message_templates,
-            processing_type, min_delay, max_delay
-          })
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
         });
         const data = await res.json();
-        if(res.ok){
-          flash('✅ تم إرسال المهمة وبدأ التنفيذ.');
-          refreshStatus();
-        }else{
-          flash(data.error || '❌ فشل إرسال المهمة.', false);
-        }
-      }catch(e){
-        flash('❌ خطأ بالشبكة أثناء إرسال المهمة.', false);
-      }
-    }
-
-    async function stopTask(){
-      try{
-        const res = await fetch('/stop_task');
-        const data = await res.json();
-        flash(data.status || '🛑 تم الإيقاف');
+        alert(data.status || data.error || 'تم الإرسال');
         refreshStatus();
-      }catch(e){
-        flash('❌ فشل إيقاف المهمة.', false);
+      } catch (e) {
+        alert('خطأ في الإرسال: ' + e);
       }
     }
 
-    async function resumeTask(){
-      try{
-        const res = await fetch('/resume_task');
+    async function stopTask() {
+      try {
+        const res = await fetch('/stop_task', {method: 'POST'});
         const data = await res.json();
-        flash(data.status || '▶️ تم الاستئناف');
+        alert(data.status || 'تمت العملية');
         refreshStatus();
-      }catch(e){
-        flash('❌ فشل الاستئناف.', false);
+      } catch (e) {
+        alert('خطأ: ' + e);
       }
     }
 
-    async function refreshStatus(){
-      try{
+    async function refreshStatus() {
+      try {
         const res = await fetch('/detailed_progress');
         const data = await res.json();
-        const rs = data.runtime_stats || {};
+
+        const rt = data.runtime_stats || {};
         const bp = data.bot_progress || {};
 
-        document.getElementById('runStatus').textContent = rs.status || 'Idle';
-        document.getElementById('currentTask').textContent = rs.current_task || '—';
-        document.getElementById('sessionUptime').textContent = rs.session_uptime || '0s';
+        document.getElementById('k_status').textContent = rt.status || 'Idle';
+        document.getElementById('k_task').textContent = rt.current_task || '—';
+        document.getElementById('k_uptime').textContent = rt.session_uptime || '0s';
 
-        const completed = bp.completed_runs || 0;
-        const failed = bp.failed_runs || 0;
-        const total = bp.total_bot_runs || (completed + failed);
-        const rate = total ? ((completed/total)*100).toFixed(2)+'%' : '0%';
-
-        document.getElementById('completedRuns').textContent = completed;
-        document.getElementById('failedRuns').textContent = failed;
-        document.getElementById('totalRuns').textContent = total;
-        document.getElementById('successRate').textContent = rate;
-
-        document.getElementById('lastUpdated').textContent = new Date().toLocaleTimeString();
-      }catch(e){
-        document.getElementById('runStatus').textContent = '❌ فشل التحميل';
+        document.getElementById('k_done').textContent = bp.completed_runs ?? 0;
+        document.getElementById('k_fail').textContent = bp.failed_runs ?? 0;
+        const rate = bp.success_rate ? (bp.success_rate * 100).toFixed(2) + '%' : '0%';
+        document.getElementById('k_rate').textContent = rate;
+      } catch (e) {
+        console.error(e);
       }
     }
 
-    // تحديث دوري كل 5 ثوانٍ
-    setInterval(refreshStatus, 5000);
-    window.onload = refreshStatus;
+    // تحديث فوري عند فتح الصفحة
+    refreshStatus();
   </script>
 </body>
-  </html>
+</html>
