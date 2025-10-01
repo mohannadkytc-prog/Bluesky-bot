@@ -1,6 +1,5 @@
 flask
 gunicorn
 requests
-bluesky.py
 atproto
 Flask-SQLAlchemy
