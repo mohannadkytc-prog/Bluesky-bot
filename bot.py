@@ -16,10 +16,10 @@ from flask import Flask, request, jsonify, render_template
 # Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# 🛑 الأسطر المحذوفة نهائياً لتجنب ImportError:
-# from bluesky_bot import BlueSkyBot
-# from config import Config
-# from models import init_db, BotRun, TaskConfig, SavedCredentials, db
+# تأكدي أن هذه الاستيرادات موجودة لديك
+from bluesky_bot import BlueSkyBot
+from config import Config
+from models import init_db, BotRun, TaskConfig, SavedCredentials, db
 
 
 # Configure logging
@@ -64,7 +64,7 @@ bot_progress = {
 
 
 # ----------------------------------------------------------------------
-# 🚀 الدوال الأساسية (الآن لا تفعل شيئاً سوى الانتظار)
+# تعريف الدوال الأساسية (مكانها الصحيح لتجنب NameError)
 # ----------------------------------------------------------------------
 
 worker_thread = None
@@ -74,51 +74,19 @@ def bot_worker_loop():
     global bot_queue, current_task, is_processing, bot_progress, stop_event
     logger.info("Worker loop started.")
     while True:
-        # Check for stop event
         if stop_event.is_set():
             time.sleep(1)
             continue
             
-        # Check for empty queue
         if not bot_queue:
             bot_progress['status'] = 'idle'
             time.sleep(5)
             continue
             
-        # 🚀 بدء معالجة المهمة الفعلية
-        current_task = bot_queue.pop(0)
-        is_processing = True
-        bot_progress['status'] = 'processing'
-        bot_progress['current_task_id'] = current_task['id']
-        
-        try:
-            logger.info(f"Starting actual task processing: {current_task['id']}")
-            
-            # 🛑 1. تهيئة البوت وتسجيل الدخول (معطل بالكامل)
-            # bot = BlueSkyBot(
-            #     current_task['bluesky_handle'],
-            #     current_task['bluesky_password']
-            # )
-            
-            logger.info("Worker reached the processing block successfully.") # رسالة تأكيد
-            
-            # 2. تشغيل المهمة الفعلية 
-            logger.info("Executing main bot logic (Placeholder/Actual logic)")
-            time.sleep(15) # محاكاة عمل البوت
-            
-            # 3. إنهاء المهمة وتحديث الحالة
-            bot_progress['status'] = 'completed'
-            logger.info(f"Task {current_task['id']} completed successfully.")
-            
-        except Exception as e:
-            bot_progress['status'] = 'failed'
-            logger.error(f"❌ Critical error during task {current_task['id']}: {e}")
-        
-        finally:
-            current_task = None
-            is_processing = False
-            bot_progress['queue_size'] = len(bot_queue)
-            stop_event.clear() # جاهز للتعامل مع مهمة جديدة
+        # Placeholder for task processing logic
+        logger.info(f"Processing task from queue...")
+        # (هنا يتم تنفيذ المهام فعلياً)
+        time.sleep(10) # انتظار لتجنب استهلاك الموارد
 
 def start_background_worker():
     """Starts the worker thread if it's not already running"""
@@ -133,7 +101,7 @@ def save_credentials_to_database(user_session, bluesky_handle, bluesky_password,
     """Placeholder for saving credentials function"""
     pass
 
-# ⚠️ دالة الاستئناف التلقائي معطلة بالكامل
+# ⚠️ **التعديل الحاسم الأخير:** دالة الاستئناف التلقائي معطلة بالكامل
 def auto_resume_from_persistence():
     """(معطلة) Automatically resume tasks from saved progress on startup"""
     pass 
@@ -143,13 +111,13 @@ def auto_resume_from_persistence():
 # ----------------------------------------------------------------------
 
 # Initialize database
-# init_db(app) # 🛑 معطل لتجنب أخطاء قاعدة البيانات
+init_db(app)
 
-# 🚀 **بدء تشغيل العامل الخلفي (تم الترتيب ليتجنب NameError)**
+# 🚀 **بدء تشغيل العامل الخلفي (صحيح وموجود في مكان واحد فقط)**
 start_background_worker() 
 
 # ----------------------------------------------------------------------
-# الدوال الأساسية لبقية التطبيق (مسارات الواجهة API)
+# الدوال الأساسية لبقية التطبيق (بدءاً من index)
 # ----------------------------------------------------------------------
 
 @app.route('/')
@@ -160,13 +128,13 @@ def index():
 @app.route('/health')
 def health_check():
     """Health check endpoint"""
-    return jsonify({
+    return {
         'status': 'healthy',
         'service': 'always-on-bot',
         'is_processing': is_processing,
         'queue_size': len(bot_queue),
         'current_task': current_task['id'] if current_task else None
-    })
+    }, 200
 
 @app.route('/stop_current_task', methods=['POST'])
 def stop_current_task():
@@ -267,11 +235,11 @@ def get_progress():
 def detailed_progress():
     """Get detailed progress with statistics"""
     try:
-        # Get database statistics (معطل)
+        # Get database statistics
         with app.app_context():
-            total_bot_runs = 0
-            completed_runs = 0
-            failed_runs = 0
+            total_bot_runs = BotRun.query.count()
+            completed_runs = BotRun.query.filter_by(status='completed').count()
+            failed_runs = BotRun.query.filter_by(status='failed').count()
             
         detailed_stats = {
             **bot_progress,
@@ -279,7 +247,7 @@ def detailed_progress():
                 'total_bot_runs': total_bot_runs,
                 'completed_runs': completed_runs,
                 'failed_runs': failed_runs,
-                'success_rate': 0.0
+                'success_rate': (completed_runs / total_bot_runs * 100) if total_bot_runs > 0 else 0
             },
             'runtime_stats': {
                 'session_uptime': (datetime.utcnow() - datetime.fromisoformat(bot_progress['session_start_time'])).total_seconds(),
@@ -290,6 +258,6 @@ def detailed_progress():
         return jsonify(detailed_stats)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-        
+
 # 🛑 **الجزء المحذوف:** تم حذف الأسطر التي تبدأ بـ `if __name__ == '__main__':`
-# ----------------------------------------------------------------------
+# لأنها تسبب انهيار الخادم في بيئة Render.
