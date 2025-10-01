@@ -1,8 +1,9 @@
 """
-Bluesky Bot + Flask wrapper (robust payload parsing)
-- يقبل post_url أو post_urls[] أو أسماء بديلة
+Bluesky Bot + Flask wrapper (audience processing: likes/reposts)
+- يقبل post_url أو post_urls[] (نأخذ أول واحد)
 - يقبل messages أو message_templates
-- Aliases للمسارات: /queue_task, /detailed_progress, /stop_task, /resume_task
+- نوع المعالجة: likes / reposts / both
+- مسارات: / (الواجهة) /queue_task /detailed_progress /stop_task /resume_task
 """
 
 import os
@@ -12,13 +13,13 @@ import logging
 import threading
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Any
-from datetime import datetime, timezone  # <-- مهم: استيراد هنا وليس داخل الدالة
+from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request
 
 from atproto import Client
 from atproto.exceptions import AtProtocolError
-from utils import resolve_post_from_url
+from utils import resolve_post_from_url  # يفترض موجود عندك (كما كان)
 
 # إعداد اللوج
 logging.basicConfig(level=logging.INFO)
@@ -39,87 +40,211 @@ class BlueSkyBot:
         self.config = config
         self.client = Client()
         self.progress_cb = None
+        self.stop_flag = False  # لإيقاف الحلقة بأمان
 
+    # --------- مصادقة ----------
     def login(self) -> None:
         log.info(f"🔑 تسجيل الدخول: {self.config.bluesky_handle}")
         self.client.login(self.config.bluesky_handle, self.config.bluesky_password)
 
-    def process_posts(self, post_urls: List[str], messages: List[str], processing_type: str) -> Dict[str, int]:
+    # --------- جلب info للبوست ----------
+    def _resolve_post(self, post_url: str) -> Optional[Dict[str, str]]:
+        try:
+            return resolve_post_from_url(self.client, post_url)
+        except Exception as e:
+            log.error(f"❌ فشل حلّ رابط المنشور: {e}")
+            return None
+
+    # --------- جلب المعجبين ----------
+    def get_likers(self, post_uri: str, post_cid: str) -> List[Dict]:
+        likers: List[Dict] = []
+        cursor = None
+        while True:
+            params = {"uri": post_uri, "cid": post_cid, "limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            res = self.client.app.bsky.feed.get_likes(params)
+            if not getattr(res, "likes", None):
+                break
+            for like in res.likes:
+                actor = like.actor
+                likers.append(
+                    {"handle": actor.handle, "display_name": actor.display_name, "did": actor.did}
+                )
+            cursor = getattr(res, "cursor", None)
+            if not cursor:
+                break
+        log.info(f"👍 عدد المعجبين: {len(likers)}")
+        return likers
+
+    # --------- جلب من عملوا إعادة نشر ----------
+    def get_reposters(self, post_uri: str, post_cid: str) -> List[Dict]:
+        reposters: List[Dict] = []
+        cursor = None
+        while True:
+            params = {"uri": post_uri, "cid": post_cid, "limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            res = self.client.app.bsky.feed.get_reposted_by(params)
+            if not getattr(res, "reposted_by", None):
+                break
+            for user in res.reposted_by:
+                reposters.append(
+                    {"handle": user.handle, "display_name": user.display_name, "did": user.did}
+                )
+            cursor = getattr(res, "cursor", None)
+            if not cursor:
+                break
+        log.info(f"🔁 عدد من أعادوا النشر: {len(reposters)}")
+        return reposters
+
+    # --------- آخر منشور/رد للمستخدم ----------
+    def fetch_latest_post(self, handle: str) -> Optional[Dict]:
+        try:
+            res = self.client.app.bsky.feed.get_author_feed(
+                {
+                    "actor": handle,
+                    "filter": "posts_with_replies",
+                    "includePins": False,
+                    "limit": 25,
+                }
+            )
+            for item in res.feed:
+                # نتجنب العناصر الناتجة عن Repost (نريد منشور أصلي أو رد)
+                if getattr(item, "reason", None):
+                    continue
+                post = item.post
+                return {
+                    "uri": post.uri,
+                    "cid": post.cid,
+                    "author_handle": post.author.handle,
+                    "author_did": post.author.did,
+                }
+            return None
+        except Exception as e:
+            log.error(f"⚠️ فشل جلب آخر منشور @{handle}: {e}")
+            return None
+
+    # --------- الرد ----------
+    def reply_to_post(self, target_post: Dict, text: str) -> bool:
+        try:
+            self.client.com.atproto.repo.create_record(
+                {
+                    "repo": self.client.me.did,
+                    "collection": "app.bsky.feed.post",
+                    "record": {
+                        "$type": "app.bsky.feed.post",
+                        "text": text,
+                        "createdAt": datetime.now(timezone.utc).isoformat(),
+                        "reply": {
+                            "root": {"uri": target_post["uri"], "cid": target_post["cid"]},
+                            "parent": {"uri": target_post["uri"], "cid": target_post["cid"]},
+                        },
+                    },
+                }
+            )
+            return True
+        except Exception as e:
+            log.error(f"❌ فشل الرد: {e}")
+            return False
+
+    # --------- إعادة نشر (اختياري) ----------
+    def repost(self, post_uri: str, post_cid: str) -> bool:
+        try:
+            self.client.com.atproto.repo.create_record(
+                {
+                    "repo": self.client.me.did,
+                    "collection": "app.bsky.feed.repost",
+                    "record": {
+                        "$type": "app.bsky.feed.repost",
+                        "subject": {"uri": post_uri, "cid": post_cid},
+                        "createdAt": datetime.now(timezone.utc).isoformat(),
+                    },
+                }
+            )
+            return True
+        except Exception as e:
+            log.error(f"⚠️ فشل إعادة النشر: {e}")
+            return False
+
+    # --------- المعالجة الأساسية بحسب فكرتك ----------
+    def process_audience(
+        self,
+        post_url: str,
+        messages: List[str],
+        mode: str = "likes",  # "likes" أو "reposts" أو "both"
+        min_delay: int = 180,
+        max_delay: int = 300,
+    ) -> Dict[str, int]:
         """
-        يعالج قائمة روابط منشورات:
-        - Repost عبر app.bsky.feed.repost
-        - Reply عبر app.bsky.feed.post مع reply.root/parent
+        - يأخذ منشور
+        - يجمع الجمهور (معجبين/معيدي نشر)
+        - يمر عليهم واحد واحد ويرد على آخر منشور لهم مع انتظار بين كل رد
         """
         self.login()
+
+        ref = self._resolve_post(post_url)
+        if not ref:
+            return {"completed": 0, "failed": 1}
+
+        uri, cid = ref["uri"], ref["cid"]
+
+        audience: List[Dict] = []
+        if mode in ("likes", "both"):
+            audience.extend(self.get_likers(uri, cid))
+        if mode in ("reposts", "both"):
+            audience.extend(self.get_reposters(uri, cid))
+
+        # إزالة التكرارات حسب الـ handle
+        seen = set()
+        unique_users: List[Dict] = []
+        for u in audience:
+            if u["handle"] not in seen:
+                seen.add(u["handle"])
+                unique_users.append(u)
+
+        total = len(unique_users)
+        log.info(f"👥 العدد المستهدف: {total}")
 
         completed = 0
         failed = 0
 
-        for url in post_urls:
-            try:
-                post_ref = resolve_post_from_url(self.client, url)
-                if not post_ref:
-                    log.error(f"❌ فشل حلّ الرابط: {url}")
-                    failed += 1
-                    continue
+        for idx, user in enumerate(unique_users, start=1):
+            if self.stop_flag:
+                log.warning("⛔ تم إيقاف المهمة بطلب المستخدم.")
+                break
 
-                uri = post_ref["uri"]
-                cid = post_ref["cid"]
-
-                # 1) إعادة نشر إن طُلب
-                if processing_type in ("reposts", "both", "reposts_and_replies"):
-                    try:
-                        self.client.com.atproto.repo.create_record({
-                            "repo": self.client.me.did,
-                            "collection": "app.bsky.feed.repost",
-                            "record": {
-                                "$type": "app.bsky.feed.repost",
-                                "subject": {"uri": uri, "cid": cid},
-                                "createdAt": datetime.now(timezone.utc).isoformat(),
-                            },
-                        })
-                        log.info(f"🔁 Repost OK: {url}")
-                    except Exception as e:
-                        log.error(f"⚠️ Repost failed: {e}")
-                        failed += 1
-                        # نكمل للرد إذا مطلوب
-
-                # 2) رد إن طُلب
-                if processing_type in ("replies", "both", "reposts_and_replies"):
-                    msg = random.choice(messages) if messages else "🙏"
-                    try:
-                        self.client.com.atproto.repo.create_record({
-                            "repo": self.client.me.did,
-                            "collection": "app.bsky.feed.post",
-                            "record": {
-                                "$type": "app.bsky.feed.post",
-                                "text": msg,
-                                "createdAt": datetime.now(timezone.utc).isoformat(),
-                                "reply": {
-                                    "root": {"uri": uri, "cid": cid},
-                                    "parent": {"uri": uri, "cid": cid},
-                                },
-                            },
-                        })
-                        log.info(f"💬 Reply OK: {msg[:40]}…")
-                    except Exception as e:
-                        log.error(f"⚠️ Reply failed: {e}")
-                        failed += 1
-                        # نتابع للمنشور التالي
-
-                completed += 1
-
-                # تأخير بين العمليات
-                delay = random.randint(self.config.min_delay, self.config.max_delay)
-                log.info(f"⏳ الانتظار {delay} ثانية قبل المهمة التالية")
-                time.sleep(delay)
-
+            handle = user["handle"]
+            latest = self.fetch_latest_post(handle)
+            if not latest:
+                log.info(f"⚠️ @{handle} لا يملك منشورات مناسبة — نتجاوز")
+                failed += 1
                 if self.progress_cb:
                     self.progress_cb(completed, failed)
+                continue
 
-            except Exception as e:
-                log.error(f"⚠️ خطأ عام أثناء المعالجة: {e}")
+            msg = random.choice(messages) if messages else "🙏"
+            ok = self.reply_to_post(latest, msg)
+
+            if ok:
+                completed += 1
+                # عدّاد يظهر في الواجهة
+                try:
+                    bot_progress["total_mentions_sent"] = bot_progress.get("total_mentions_sent", 0) + 1
+                except Exception:
+                    pass
+                log.info(f"✅ [{idx}/{total}] ردّينا على @{handle}")
+            else:
                 failed += 1
+                log.info(f"❌ [{idx}/{total}] فشل الرد على @{handle}")
+
+            # انتظار بين المستخدمين
+            delay = random.randint(min_delay, max_delay)
+            log.info(f"⏳ انتظار {delay} ثانية قبل المستخدم التالي…")
+            time.sleep(delay)
+
+            if self.progress_cb:
+                self.progress_cb(completed, failed)
 
         return {"completed": completed, "failed": failed}
 
@@ -165,22 +290,25 @@ def queue_task():
     data = request.get_json(force=True)
     log.info(f"📥 Payload: {data}")
 
-    # دعم أسماء متعددة للحقول
+    # الحقول
     post_urls = data.get("post_urls") or [data.get("post_url")]
     post_urls = [u for u in (post_urls or []) if u]
+    target_post = post_urls[0] if post_urls else None
 
     messages = data.get("message_templates") or data.get("messages") or []
+
     bluesky_handle = data.get("bluesky_handle") or os.getenv("BLUESKY_HANDLE") or os.getenv("BSKY_HANDLE")
     bluesky_password = data.get("bluesky_password") or os.getenv("BLUESKY_PASSWORD") or os.getenv("BSKY_PASSWORD")
-    processing_type = data.get("processing_type", "replies")
+
+    # نوع المعالجة من الواجهة: likes / reposts / both
+    processing_type = data.get("processing_type", "likes")
 
     min_delay = int(data.get("min_delay", 200))
     max_delay = int(data.get("max_delay", 250))
 
-    if not bluesky_handle or not bluesky_password or not post_urls:
+    if not bluesky_handle or not bluesky_password or not target_post:
         return jsonify({"error": "❌ البيانات ناقصة (handle/password/post_url)"}), 400
     if not messages:
-        # بنسمح برسالة افتراضية إذا نسي المستخدم
         messages = ["🙏 Thank you for supporting."]
 
     # تهيئة البوت
@@ -196,9 +324,22 @@ def queue_task():
     def run_bot():
         start = time.time()
         runtime_stats["status"] = "Running"
-        runtime_stats["current_task"] = "Processing posts"
+        runtime_stats["current_task"] = "Processing audience"
+        bot_instance.stop_flag = False
 
-        result = bot_instance.process_posts(post_urls, messages, processing_type)
+        # كولباك للتقدم
+        def cb(done, failed):
+            update_progress(done, failed)
+
+        bot_instance.progress_cb = cb
+
+        result = bot_instance.process_audience(
+            post_url=target_post,
+            messages=messages,
+            mode=processing_type,
+            min_delay=min_delay,
+            max_delay=max_delay,
+        )
 
         runtime_stats["status"] = "Idle"
         runtime_stats["current_task"] = None
@@ -214,12 +355,17 @@ def queue_task():
 
 @app.route("/stop_task", methods=["GET", "POST"])
 def stop_task():
+    if bot_instance:
+        bot_instance.stop_flag = True
     runtime_stats["status"] = "Stopped"
     return jsonify({"status": "🛑 تم الإيقاف"})
 
 
 @app.route("/resume_task", methods=["GET", "POST"])
 def resume_task():
+    # الاستئناف يكون بكيو مهمة جديدة عادةً؛ هنا نزيل العلم فقط
+    if bot_instance:
+        bot_instance.stop_flag = False
     runtime_stats["status"] = "Running"
     return jsonify({"status": "▶️ تم الاستئناف"})
 
@@ -229,7 +375,7 @@ def detailed_progress():
     return jsonify({"runtime_stats": runtime_stats, "bot_progress": bot_progress})
 
 
-# Aliases اختيارية إن أردتِ
+# Aliases اختيارية
 @app.post("/queue")
 def queue_alias():
     return queue_task()
