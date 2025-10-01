@@ -1,263 +1,198 @@
-"""
-Bluesky Bot + Flask wrapper (robust payload parsing)
-- يقبل post_url أو post_urls[] أو أسماء بديلة
-- يقبل messages أو message_templates
-- يحتوي على Aliases للمسارات: /queue_task, /detailed_progress, /stop_task, /resume_task
-"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🤖 Persistent Bluesky Bot</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+        .container {
+            max-width: 800px; margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px; padding: 40px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            margin-top: 20px;
+        }
+        .header { text-align: center; margin-bottom: 30px; }
+        .header h1 { color: #333; font-size: 28px; margin-bottom: 5px; }
+        .header p { color: #666; font-size: 14px; }
+        .alert { padding: 15px; margin-bottom: 20px; border-radius: 10px; font-size: 14px; }
+        .alert-info { background-color: #e0f7fa; color: #00bcd4; border: 1px solid #00bcd4; }
+        .status-box { background-color: #f0f4f8; border-left: 5px solid #667eea; margin-bottom: 20px; padding: 15px; border-radius: 10px; }
+        .detailed-progress { background: #fff; margin-bottom: 20px; border-radius: 10px; display: flex; flex-wrap: wrap; }
+        .progress-item { width: 50%; padding: 10px 15px; border-bottom: 1px solid #eee; }
+        .progress-item:nth-child(even) { border-left: 1px solid #eee; }
+        .progress-item label { display: block; font-size: 12px; color: #999; }
+        .form-group { margin-bottom: 15px; }
+        .form-group label { display: block; font-weight: bold; margin-bottom: 5px; color: #555; }
+        input[type="text"], input[type="password"], input[type="number"], textarea {
+            width: 100%; padding: 10px; border: 1px solid #ddd;
+            border-radius: 5px; font-size: 14px;
+        }
+        textarea { resize: vertical; }
+        .form-section {
+            padding: 20px; margin-bottom: 20px; border-radius: 10px;
+            background-color: #f7f7f7; border: 1px solid #eee;
+        }
+        .form-section h3 { margin-bottom: 15px; color: #667eea; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        .button-group button {
+            padding: 10px 20px; margin-right: 10px; border: none;
+            border-radius: 5px; cursor: pointer; font-weight: bold; color: white;
+        }
+        #queueTaskButton { background-color: #28a745; }
+        #stopTaskButton { background-color: #dc3545; }
+        #resumeTaskButton { background-color: #ffc107; }
+        #viewProgressButton { background-color: #17a2b8; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Persistent Bluesky Bot</h1>
+            <p>يعمل بشكل مستمر في الخلفية، حتى عند إغلاق الصفحة</p>
+        </div>
 
-import os
-import time
-import random
-import logging
-import threading
-from dataclasses import dataclass
-from typing import List, Dict, Optional, Any
+        <div class="alert alert-info">
+            <p><strong>تنويه:</strong> يعمل البوت بمجرد الضغط على "بدء المهمة". يرجى استخدام <strong>App Password</strong> وليس كلمة مرور الحساب العادية.</p>
+        </div>
 
-from flask import Flask, jsonify, render_template, request
+        <div class="status-box">
+            <h3 style="color:#667eea;">حالة الخدمة</h3>
+            <p><strong>حالة التشغيل:</strong> <span id="runStatus">Idle</span></p>
+            <p><strong>المهمة الحالية:</strong> <span id="currentTask">لا توجد مهمة</span></p>
+            <p><strong>تحديث الحالة:</strong> <span id="lastUpdated">--</span></p>
+        </div>
 
-from atproto import Client
-from atproto.exceptions import AtProtocolError
-from utils import resolve_post_from_url
+        <div class="detailed-progress">
+            <h3 style="width:100%; padding:15px; margin:0; color:#764ba2;">📊 التقدم</h3>
+            <div class="progress-item"><label>منشورات مُنجزة</label><span id="totalPostsProcessed">0</span></div>
+            <div class="progress-item"><label>منشورات بالإجمالي</label><span id="totalPostsQueued">0</span></div>
+            <div class="progress-item"><label>المتابعون</label><span id="totalFollowers">0</span></div>
+            <div class="progress-item"><label>محاولات فاشلة</label><span id="failedRuns">0</span></div>
+            <div class="progress-item"><label>نسبة النجاح</label><span id="successRate">0%</span></div>
+            <div class="progress-item"><label>مدة التشغيل</label><span id="sessionUptime">--</span></div>
+            <div class="progress-item"><label>الوقت المتبقي</label><span id="remainingTime">--</span></div>
+            <div class="progress-item"><label>إجمالي الردود</label><span id="totalMentionsSent">0</span></div>
+        </div>
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("bluesky-bot")
+        <form id="botForm">
+            <div class="form-section">
+                <h3>بيانات تسجيل الدخول</h3>
+                <div class="form-group">
+                    <label for="bluesky_handle">حساب بلوسكاي</label>
+                    <input type="text" id="bluesky_handle" placeholder="yourname.bsky.social">
+                </div>
+                <div class="form-group">
+                    <label for="bluesky_password">كلمة مرور التطبيق</label>
+                    <input type="password" id="bluesky_password" placeholder="App Password">
+                </div>
+            </div>
 
-# ================== البوت (مختصر) ==================
-@dataclass
-class Config:
-    bluesky_handle: str
-    bluesky_password: str
-    min_delay: int = 200
-    max_delay: int = 250
+            <div class="form-section">
+                <h3>رابط المنشور</h3>
+                <div class="form-group">
+                    <label for="post_url_1">Post URL</label>
+                    <input type="text" id="post_url_1" placeholder="https://bsky.app/profile/user/post/...">
+                </div>
+            </div>
 
-class BlueSkyBot:
-    def __init__(self, config: Config):
-        self.config = config
-        self.client = Client()
-        self.progress_cb = None
+            <div class="form-section">
+                <h3>قوالب الرسائل (10)</h3>
+                <textarea id="message_template_1" rows="2" placeholder="رسالة 1"></textarea>
+                <textarea id="message_template_2" rows="2" placeholder="رسالة 2"></textarea>
+                <textarea id="message_template_3" rows="2" placeholder="رسالة 3"></textarea>
+                <textarea id="message_template_4" rows="2" placeholder="رسالة 4"></textarea>
+                <textarea id="message_template_5" rows="2" placeholder="رسالة 5"></textarea>
+                <textarea id="message_template_6" rows="2" placeholder="رسالة 6"></textarea>
+                <textarea id="message_template_7" rows="2" placeholder="رسالة 7"></textarea>
+                <textarea id="message_template_8" rows="2" placeholder="رسالة 8"></textarea>
+                <textarea id="message_template_9" rows="2" placeholder="رسالة 9"></textarea>
+                <textarea id="message_template_10" rows="2" placeholder="رسالة 10"></textarea>
+            </div>
 
-    def _progress(self, current, total, last_processed=""):
-        if self.progress_cb:
-            self.progress_cb(current=current, total=total, last_processed=last_processed)
-        pct = (current / total * 100) if total else 0
-        log.info(f"Progress {current}/{total} ({pct:.1f}%) last={last_processed}")
+            <div class="form-section">
+                <h3>الإعدادات</h3>
+                <div class="form-group">
+                    <label for="processing_type">نوع المعالجة</label>
+                    <select id="processing_type">
+                        <option value="reposts">إعادة نشر + ردود</option>
+                        <option value="replies">ردود فقط</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="min_delay">أقل تأخير (ثواني)</label>
+                    <input type="number" id="min_delay" value="180">
+                </div>
+                <div class="form-group">
+                    <label for="max_delay">أقصى تأخير (ثواني)</label>
+                    <input type="number" id="max_delay" value="300">
+                </div>
+            </div>
 
-    def authenticate(self) -> bool:
-        try:
-            self.client.login(self.config.bluesky_handle, self.config.bluesky_password)
-            return True
-        except Exception as e:
-            log.error(f"Auth failed: {e}")
-            return False
+            <div class="button-group">
+                <button type="button" id="queueTaskButton" onclick="queueTask()">✅ بدء المهمة</button>
+                <button type="button" id="stopTaskButton" onclick="stopTask()">🛑 إيقاف</button>
+                <button type="button" id="resumeTaskButton" onclick="resumeTask()">▶️ استئناف</button>
+                <button type="button" id="viewProgressButton" onclick="updateStatus()">🔄 تحديث</button>
+            </div>
+            <div id="taskQueueStatus" style="margin-top:20px; font-weight:bold; color:#00bcd4;"></div>
+        </form>
+    </div>
 
-    def process_reposters_with_replies(self, post_url: str, messages: List[str]) -> bool:
-        try:
-            if not self.authenticate():
-                return False
-            resolved = resolve_post_from_url(self.client, post_url)
-            if not resolved:
-                log.error("Failed to resolve post via Bluesky API")
-                return False
-            post_uri, post_cid = resolved["uri"], resolved["cid"]
-            resp = self.client.app.bsky.feed.get_reposted_by({"uri": post_uri, "cid": post_cid, "limit": 100})
-            reposters = getattr(resp, "reposted_by", []) or []
-            total = len(reposters)
-            if total == 0:
-                self._progress(0, 0, "")
-                return True
-            for i, r in enumerate(reposters, 1):
-                self._progress(i, total, getattr(r, "handle", ""))
-                time.sleep(random.randint(self.config.min_delay, self.config.max_delay))
-            return True
-        except Exception as e:
-            log.error(f"Processing error: {e}")
-            return False
-
-# ================== Flask ==================
-app = Flask(__name__)
-
-_state: Dict[str, Any] = {
-    "running": False,
-    "last_error": None,
-    "total": 0,
-    "current": 0,
-    "last_processed": "",
-    "uptime_seconds": 0,
-}
-_worker: Optional[threading.Thread] = None
-_started_at: Optional[float] = None
-
-def _env(*names: str, default: Optional[str] = None) -> Optional[str]:
-    for n in names:
-        v = os.getenv(n)
-        if v:
-            return v
-    return default
-
-BOT = BlueSkyBot(
-    Config(
-        _env("BSKY_HANDLE", "BLUESKY_HANDLE"),
-        _env("BSKY_PASSWORD", "BLUESKY_PASSWORD"),
-        int(_env("MIN_DELAY", default="180")),
-        int(_env("MAX_DELAY", default="300")),
-    )
-)
-
-def _progress_cb(**kw):
-    _state["current"] = kw.get("current", _state["current"])
-    _state["total"] = kw.get("total", _state["total"])
-    _state["last_processed"] = kw.get("last_processed", _state["last_processed"])
-BOT.progress_cb = _progress_cb
-
-def _extract_payload(req) -> Dict[str, Any]:
-    """
-    يُعيد dict فيه:
-      post_url: str | None
-      messages: List[str]
-    - يدعم JSON و Form
-    - يقبل post_url أو post_urls[] وأسماء بديلة
-    """
-    payload: Dict[str, Any] = {"post_url": None, "messages": []}
-
-    json_data = req.get_json(silent=True) if req.is_json else None
-    form = req.form
-
-    # --- Logging للدبَغينغ ---
-    try:
-        log.info(f"Incoming /queue payload. is_json={req.is_json} "
-                 f"json_keys={list(json_data.keys()) if isinstance(json_data, dict) else None} "
-                 f"form_keys={list(form.keys()) if form else None}")
-    except Exception:
-        pass
-
-    # 1) احصل على post_url من JSON أو Form
-    candidates_single = ["post_url", "url", "post", "target_url", "postLink"]
-    candidates_multi = ["post_urls"]  # Array
-
-    def _first_non_empty(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
-        for k in keys:
-            v = d.get(k)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-        return None
-
-    if isinstance(json_data, dict):
-        # أولاً: لو فيه post_urls (مصفوفة) خذ أول عنصر
-        for k in candidates_multi:
-            arr = json_data.get(k)
-            if isinstance(arr, list) and arr:
-                first = str(arr[0]).strip()
-                if first:
-                    payload["post_url"] = first
-                    break
-        if not payload["post_url"]:
-            payload["post_url"] = _first_non_empty(json_data, candidates_single)
-
-        # رسائل: messages أو message_templates
-        msgs = json_data.get("messages") or json_data.get("message_templates") or []
-        if isinstance(msgs, list):
-            payload["messages"] = [str(m) for m in msgs if str(m).strip()]
-    else:
-        # Form
-        # لو كانت post_urls موجودة في الفورم (كـ multiple inputs)
-        post_urls = form.getlist("post_urls") if form else []
-        if post_urls:
-            first = str(post_urls[0]).strip()
-            if first:
-                payload["post_url"] = first
-        if not payload["post_url"] and form:
-            for k in candidates_single:
-                v = form.get(k)
-                if v and v.strip():
-                    payload["post_url"] = v.strip()
-                    break
-        # رسائل من الفورم (messages[])
-        if form:
-            msgs = form.getlist("messages") or form.getlist("message_templates")
-            if msgs:
-                payload["messages"] = [str(m) for m in msgs if str(m).strip()]
-
-    # لو لسه ما فيه رابط، جرّب DEFAULT_POST_URL من البيئة
-    if not payload["post_url"]:
-        payload["post_url"] = os.getenv("DEFAULT_POST_URL", "").strip() or None
-
-    return payload
-
-def _worker_func(post_url: str, messages: List[str]):
-    global _started_at
-    try:
-        ok = BOT.process_reposters_with_replies(post_url, messages)
-        if not ok and not _state["last_error"]:
-            _state["last_error"] = "Processing returned False"
-    except Exception as e:
-        _state["last_error"] = str(e)
-        log.exception("Worker crashed")
-    finally:
-        _state["running"] = False
-        _started_at = None
-
-@app.route("/")
-def home():
-    try:
-        return render_template("persistent.html")
-    except Exception:
-        return "Persistent Bluesky Bot is running."
-
-@app.get("/progress")
-def progress():
-    if _started_at:
-        _state["uptime_seconds"] = int(time.time() - _started_at)
-    return jsonify(_state)
-
-@app.post("/queue")
-def queue():
-    global _worker, _started_at
-    if _state["running"]:
-        return jsonify({"ok": True, "msg": "Already running"})
-
-    payload = _extract_payload(request)
-    post_url = payload.get("post_url")
-    messages = payload.get("messages", [])
-    log.info(f"/queue resolved post_url={post_url!r}, messages_count={len(messages)}")
-
-    if not post_url:
-        return jsonify({"ok": False, "msg": "post_url is required (or set DEFAULT_POST_URL)"}), 400
-
-    _state.update({"running": True, "last_error": None, "total": 0, "current": 0, "last_processed": ""})
-    _started_at = time.time()
-    _worker = threading.Thread(target=_worker_func, args=(post_url, messages), daemon=True)
-    _worker.start()
-    return jsonify({"ok": True, "msg": "تم إرسال المهمة بنجاح."})
-
-@app.post("/stop")
-def stop():
-    _state["running"] = False
-    return jsonify({"ok": True, "msg": "تم إيقاف المهمة."})
-
-@app.post("/resume")
-def resume():
-    return jsonify({"ok": False, "msg": "استخدم /queue مع post_url"}), 400
-
-@app.get("/healthz")
-def health():
-    return "ok", 200
-
-# --- Aliases لتوافق الواجهة ---
-@app.post("/queue_task")
-def queue_task_alias():
-    return queue()
-
-@app.get("/detailed_progress")
-def detailed_progress_alias():
-    return progress()
-
-@app.post("/stop_task")
-def stop_task_alias():
-    return stop()
-
-@app.post("/resume_task")
-def resume_task_alias():
-    return resume()
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
+    <script>
+        function getMessageTemplates() {
+            const msgs=[]; for(let i=1;i<=10;i++){ 
+                let val=document.getElementById('message_template_'+i).value.trim();
+                if(val) msgs.push(val);
+            } return msgs;
+        }
+        function queueTask() {
+            fetch('/queue_task',{method:'POST',headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({
+                post_urls:[document.getElementById('post_url_1').value],
+                message_templates:getMessageTemplates(),
+                bluesky_handle:document.getElementById('bluesky_handle').value,
+                bluesky_password:document.getElementById('bluesky_password').value,
+                processing_type:document.getElementById('processing_type').value,
+                min_delay:parseInt(document.getElementById('min_delay').value),
+                max_delay:parseInt(document.getElementById('max_delay').value)
+              })})
+            .then(r=>r.json()).then(d=>{
+                document.getElementById('taskQueueStatus').textContent='✅ تم إرسال المهمة';
+                updateStatus();
+            }).catch(e=>{
+                document.getElementById('taskQueueStatus').textContent='❌ فشل في إرسال المهمة';
+            });
+        }
+        function stopTask(){ fetch('/stop_task').then(r=>r.json()).then(d=>{
+            document.getElementById('taskQueueStatus').textContent='🛑 المهمة توقفت'; updateStatus();
+        });}
+        function resumeTask(){ fetch('/resume_task').then(r=>r.json()).then(d=>{
+            document.getElementById('taskQueueStatus').textContent='▶️ المهمة استؤنفت'; updateStatus();
+        });}
+        function updateStatus(){ fetch('/detailed_progress').then(r=>r.json()).then(data=>{
+            document.getElementById('runStatus').textContent=data.runtime_stats.status||'Idle';
+            document.getElementById('currentTask').textContent=data.runtime_stats.current_task||'--';
+            document.getElementById('lastUpdated').textContent=new Date().toLocaleTimeString();
+            document.getElementById('totalPostsProcessed').textContent=data.bot_progress.completed_runs;
+            document.getElementById('totalPostsQueued').textContent=data.bot_progress.total_bot_runs;
+            document.getElementById('totalFollowers').textContent=data.bot_progress.total_followers||'0';
+            document.getElementById('failedRuns').textContent=data.bot_progress.failed_runs;
+            document.getElementById('successRate').textContent=(data.bot_progress.success_rate*100).toFixed(2)+'%';
+            document.getElementById('sessionUptime').textContent=data.runtime_stats.session_uptime;
+            document.getElementById('remainingTime').textContent=data.runtime_stats.current_task_runtime||'0s';
+            document.getElementById('totalMentionsSent').textContent=data.bot_progress.total_mentions_sent||'0';
+        }).catch(e=>{
+            document.getElementById('runStatus').textContent='❌ فشل التحديث';
+        });}
+        setInterval(updateStatus,5000); window.onload=updateStatus;
+    </script>
+</body>
+    </html>
