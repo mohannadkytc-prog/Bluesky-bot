@@ -2,7 +2,7 @@
 Bluesky Bot + Flask wrapper (robust payload parsing)
 - يقبل post_url أو post_urls[] أو أسماء بديلة
 - يقبل messages أو message_templates
-- يحتوي على Aliases للمسارات: /queue_task, /detailed_progress, /stop_task, /resume_task
+- المسارات Aliases: /queue_task, /detailed_progress, /stop_task, /resume_task
 """
 
 import os
@@ -16,12 +16,13 @@ from typing import List, Dict, Optional, Any
 from flask import Flask, jsonify, render_template, request
 
 from atproto import Client
-from utils import resolve_post_from_url  # تأكدي هذا موجود كما في مشروعك
+from atproto.exceptions import AtProtocolError
+from utils import resolve_post_from_url
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bluesky-bot")
 
-# ================== البوت (مختصر للتشغيل السليم) ==================
+# ================== البوت ==================
 @dataclass
 class Config:
     bluesky_handle: str
@@ -35,235 +36,151 @@ class BlueSkyBot:
         self.client = Client()
         self.progress_cb = None
 
-    def _progress(self, current, total, last_processed=""):
-        if self.progress_cb:
-            self.progress_cb(current=current, total=total, last_processed=last_processed)
-        pct = (current / total * 100) if total else 0
-        log.info(f"Progress {current}/{total} ({pct:.1f}%) last={last_processed}")
+    def login(self):
+        log.info(f"🔑 تسجيل الدخول باستخدام الحساب: {self.config.bluesky_handle}")
+        self.client.login(self.config.bluesky_handle, self.config.bluesky_password)
 
-    def authenticate(self) -> bool:
-        try:
-            self.client.login(self.config.bluesky_handle, self.config.bluesky_password)
-            return True
-        except Exception as e:
-            log.error(f"Auth failed: {e}")
-            return False
+    def process_posts(self, post_urls: List[str], messages: List[str], processing_type: str):
+        self.login()
 
-    def process_reposters_with_replies(self, post_url: str, messages: List[str]) -> bool:
-        """
-        منطق مبسط: يتحقق من الرابط، يجلب المعيدين، ويحدث التقدم مع تأخير عشوائي.
-        اربطي لاحقًا منطق الردود الفعلي كما يناسبك.
-        """
-        try:
-            if not self.authenticate():
-                return False
+        completed = 0
+        failed = 0
+        for url in post_urls:
+            try:
+                post_ref = resolve_post_from_url(self.client, url)
+                if not post_ref:
+                    log.error(f"❌ لم أستطع解析 الرابط: {url}")
+                    failed += 1
+                    continue
 
-            resolved = resolve_post_from_url(self.client, post_url)
-            if not resolved:
-                log.error("Failed to resolve post via Bluesky API")
-                return False
+                msg = random.choice(messages)
 
-            post_uri, post_cid = resolved["uri"], resolved["cid"]
-            resp = self.client.app.bsky.feed.get_reposted_by({"uri": post_uri, "cid": post_cid, "limit": 100})
-            reposters = getattr(resp, "reposted_by", []) or []
-            total = len(reposters)
-            if total == 0:
-                self._progress(0, 0, "")
-                return True
+                if processing_type in ("reposts", "both", "reposts_and_replies"):
+                    self.client.repost(post_ref)
+                    log.info(f"🔁 تم إعادة النشر: {url}")
 
-            for i, r in enumerate(reposters, 1):
-                handle = getattr(r, "handle", "")
-                self._progress(i, total, handle)
-                time.sleep(random.randint(self.config.min_delay, self.config.max_delay))
-            return True
-        except Exception as e:
-            log.error(f"Processing error: {e}")
-            return False
+                if processing_type in ("replies", "both", "reposts_and_replies"):
+                    self.client.send_post(text=msg, reply_to=post_ref)
+                    log.info(f"💬 تم الرد برسالة: {msg}")
 
-# ================== Flask ==================
+                completed += 1
+                delay = random.randint(self.config.min_delay, self.config.max_delay)
+                log.info(f"⏳ الانتظار {delay} ثانية قبل المهمة التالية")
+                time.sleep(delay)
+
+                if self.progress_cb:
+                    self.progress_cb(completed, failed)
+
+            except Exception as e:
+                log.error(f"⚠️ خطأ أثناء المعالجة: {e}")
+                failed += 1
+
+        return {"completed": completed, "failed": failed}
+
+
+# ================== الويب سيرفر ==================
 app = Flask(__name__)
-
-_state: Dict[str, Any] = {
-    "running": False,
-    "last_error": None,
-    "total": 0,
-    "current": 0,
-    "last_processed": "",
-    "uptime_seconds": 0,
+runtime_stats = {
+    "status": "Idle",
+    "current_task": None,
+    "session_uptime": "0s"
 }
-_worker: Optional[threading.Thread] = None
-_started_at: Optional[float] = None
+bot_progress = {
+    "completed_runs": 0,
+    "failed_runs": 0,
+    "total_bot_runs": 0,
+    "success_rate": 0.0,
+    "total_mentions_sent": 0,
+    "total_followers": 0
+}
 
-def _env(*names: str, default: Optional[str] = None) -> Optional[str]:
-    for n in names:
-        v = os.getenv(n)
-        if v:
-            return v
-    return default
+bot_thread: Optional[threading.Thread] = None
+bot_instance: Optional[BlueSkyBot] = None
 
-BOT = BlueSkyBot(
-    Config(
-        _env("BSKY_HANDLE", "BLUESKY_HANDLE"),
-        _env("BSKY_PASSWORD", "BLUESKY_PASSWORD"),
-        int(_env("MIN_DELAY", default="180")),
-        int(_env("MAX_DELAY", default="300")),
-    )
-)
 
-def _progress_cb(**kw):
-    _state["current"] = kw.get("current", _state["current"])
-    _state["total"] = kw.get("total", _state["total"])
-    _state["last_processed"] = kw.get("last_processed", _state["last_processed"])
-BOT.progress_cb = _progress_cb
+def update_progress(completed, failed):
+    bot_progress["completed_runs"] = completed
+    bot_progress["failed_runs"] = failed
+    total = completed + failed
+    bot_progress["total_bot_runs"] = total
+    bot_progress["success_rate"] = (completed / total) if total else 0.0
 
-def _extract_payload(req) -> Dict[str, Any]:
-    """
-    يُعيد dict فيه:
-      post_url: str | None
-      messages: List[str]
-    - يدعم JSON و Form
-    - يقبل post_url أو post_urls[] وأسماء بديلة
-    """
-    payload: Dict[str, Any] = {"post_url": None, "messages": []}
-
-    json_data = req.get_json(silent=True) if req.is_json else None
-    form = req.form
-
-    # Logging مساعد
-    try:
-        log.info(f"Incoming /queue payload. is_json={req.is_json} "
-                 f"json_keys={list(json_data.keys()) if isinstance(json_data, dict) else None} "
-                 f"form_keys={list(form.keys()) if form else None}")
-    except Exception:
-        pass
-
-    # 1) احصل على post_url
-    candidates_single = ["post_url", "url", "post", "target_url", "postLink"]
-    candidates_multi = ["post_urls"]  # Array
-
-    def _first_non_empty(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
-        for k in keys:
-            v = d.get(k)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-        return None
-
-    if isinstance(json_data, dict):
-        # post_urls (مصفوفة)
-        for k in candidates_multi:
-            arr = json_data.get(k)
-            if isinstance(arr, list) and arr:
-                first = str(arr[0]).strip()
-                if first:
-                    payload["post_url"] = first
-                    break
-        if not payload["post_url"]:
-            payload["post_url"] = _first_non_empty(json_data, candidates_single)
-
-        # رسائل: messages أو message_templates
-        msgs = json_data.get("messages") or json_data.get("message_templates") or []
-        if isinstance(msgs, list):
-            payload["messages"] = [str(m) for m in msgs if str(m).strip()]
-    else:
-        # Form
-        post_urls = form.getlist("post_urls") if form else []
-        if post_urls:
-            first = str(post_urls[0]).strip()
-            if first:
-                payload["post_url"] = first
-        if not payload["post_url"] and form:
-            for k in candidates_single:
-                v = form.get(k)
-                if v and v.strip():
-                    payload["post_url"] = v.strip()
-                    break
-        # رسائل من الفورم (messages[])
-        if form:
-            msgs = form.getlist("messages") or form.getlist("message_templates")
-            if msgs:
-                payload["messages"] = [str(m) for m in msgs if str(m).strip()]
-
-    # بديل: من Environment
-    if not payload["post_url"]:
-        payload["post_url"] = os.getenv("DEFAULT_POST_URL", "").strip() or None
-
-    return payload
-
-def _worker_func(post_url: str, messages: List[str]):
-    global _started_at
-    try:
-        ok = BOT.process_reposters_with_replies(post_url, messages)
-        if not ok and not _state["last_error"]:
-            _state["last_error"] = "Processing returned False"
-    except Exception as e:
-        _state["last_error"] = str(e)
-        log.exception("Worker crashed")
-    finally:
-        _state["running"] = False
-        _started_at = None
 
 @app.route("/")
-def home():
-    try:
-        return render_template("persistent.html")
-    except Exception:
-        return "Persistent Bluesky Bot is running."
+def index():
+    return render_template("persistent.html")
 
-@app.get("/progress")
-def progress():
-    if _started_at:
-        _state["uptime_seconds"] = int(time.time() - _started_at)
-    return jsonify(_state)
 
-@app.post("/queue")
-def queue():
-    global _worker, _started_at
-    if _state["running"]:
-        return jsonify({"ok": True, "msg": "Already running"})
+@app.route("/queue_task", methods=["POST"])
+def queue_task():
+    global bot_thread, bot_instance
 
-    payload = _extract_payload(request)
-    post_url = payload.get("post_url")
-    messages = payload.get("messages", [])
-    log.info(f"/queue resolved post_url={post_url!r}, messages_count={len(messages)}")
+    data = request.get_json(force=True)
+    log.info(f"📥 استلمت بيانات: {data}")
 
-    if not post_url:
-        return jsonify({"ok": False, "msg": "post_url is required (or set DEFAULT_POST_URL)"}), 400
+    # دعم أسماء مختلفة للحقول
+    post_urls = data.get("post_urls") or [data.get("post_url")]
+    post_urls = [u for u in post_urls if u] if post_urls else []
 
-    _state.update({"running": True, "last_error": None, "total": 0, "current": 0, "last_processed": ""})
-    _started_at = time.time()
-    _worker = threading.Thread(target=_worker_func, args=(post_url, messages), daemon=True)
-    _worker.start()
-    return jsonify({"ok": True, "msg": "تم إرسال المهمة بنجاح."})
+    messages = data.get("message_templates") or data.get("messages") or []
+    bluesky_handle = data.get("bluesky_handle") or os.getenv("BLUESKY_HANDLE")
+    bluesky_password = data.get("bluesky_password") or os.getenv("BLUESKY_PASSWORD")
+    processing_type = data.get("processing_type", "replies")
 
-@app.post("/stop")
-def stop():
-    _state["running"] = False
-    return jsonify({"ok": True, "msg": "تم إيقاف المهمة."})
+    min_delay = int(data.get("min_delay", 200))
+    max_delay = int(data.get("max_delay", 250))
 
-@app.post("/resume")
-def resume():
-    return jsonify({"ok": False, "msg": "استخدم /queue مع post_url"}), 400
+    if not bluesky_handle or not bluesky_password or not post_urls or not messages:
+        return jsonify({"error": "❌ البيانات غير مكتملة"}), 400
 
-@app.get("/healthz")
-def health():
-    return "ok", 200
+    config = Config(
+        bluesky_handle=bluesky_handle,
+        bluesky_password=bluesky_password,
+        min_delay=min_delay,
+        max_delay=max_delay
+    )
 
-# --- Aliases لتوافق الواجهة ---
-@app.post("/queue_task")
-def queue_task_alias():
-    return queue()
+    bot_instance = BlueSkyBot(config)
 
-@app.get("/detailed_progress")
-def detailed_progress_alias():
-    return progress()
+    def run_bot():
+        runtime_stats["status"] = "Running"
+        runtime_stats["current_task"] = "Processing posts"
+        start_time = time.time()
 
-@app.post("/stop_task")
-def stop_task_alias():
-    return stop()
+        result = bot_instance.process_posts(post_urls, messages, processing_type)
 
-@app.post("/resume_task")
-def resume_task_alias():
-    return resume()
+        runtime_stats["status"] = "Idle"
+        runtime_stats["current_task"] = None
+        runtime_stats["session_uptime"] = f"{int(time.time()-start_time)}s"
+
+        update_progress(result["completed"], result["failed"])
+
+    bot_thread = threading.Thread(target=run_bot)
+    bot_thread.start()
+
+    return jsonify({"status": "✅ المهمة بدأت"})
+
+
+@app.route("/stop_task")
+def stop_task():
+    runtime_stats["status"] = "Stopped"
+    return jsonify({"status": "🛑 تم الإيقاف"})
+
+
+@app.route("/resume_task")
+def resume_task():
+    runtime_stats["status"] = "Running"
+    return jsonify({"status": "▶️ تم الاستئناف"})
+
+
+@app.route("/detailed_progress")
+def detailed_progress():
+    return jsonify({
+        "runtime_stats": runtime_stats,
+        "bot_progress": bot_progress
+    })
+
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
+    port = int(os.getenv("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
