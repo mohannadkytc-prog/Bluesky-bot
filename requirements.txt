@@ -2,4 +2,3 @@ flask
 gunicorn
 requests
 atproto>=0.0.62
-Flask-SQLAlchemy
