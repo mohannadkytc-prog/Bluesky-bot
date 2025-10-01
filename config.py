@@ -1,8 +1,42 @@
-"""Runtime paths & defaults (works on /data if present, otherwise /tmp)."""
-import os
+# -*- coding: utf-8 -*-
+"""Runtime paths & defaults for the Bluesky bot.
+- يختار مجلد التخزين تلقائيًا:
+  1) DATA_DIR من متغيرات البيئة (إن أمكن الكتابة)
+  2) /data إن كان موجودًا
+  3) وإلا /tmp (مناسب لخطة Starter)
+"""
 
-# استخدم /data إذا كان موجود (خطة مدفوعة مع Disk)، وإلا /tmp (Starter)
-DATA_DIR = "/data" if os.path.exists("/data") else "/tmp"
+import os
+from typing import Optional
+
+def _choose_data_dir() -> str:
+    # 1) لو المستخدم حدّد DATA_DIR نحاول نستخدمه
+    env_dir = os.getenv("DATA_DIR")
+    if env_dir:
+        try:
+            os.makedirs(env_dir, exist_ok=True)
+            test_path = os.path.join(env_dir, ".writetest")
+            with open(test_path, "w") as f:
+                f.write("ok")
+            os.remove(test_path)
+            return env_dir
+        except Exception:
+            # لو ما قدرنا نكتب فيه نرجع للاحتياط
+            pass
+
+    # 2) /data في الخدمات مع قرص
+    if os.path.exists("/data"):
+        try:
+            os.makedirs("/data", exist_ok=True)
+            return "/data"
+        except Exception:
+            pass
+
+    # 3) fallback الآمن
+    return "/tmp"
+
+# مجلد التخزين المختار
+DATA_DIR = _choose_data_dir()
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # مسارات الملفات/المجلدات
@@ -13,10 +47,6 @@ os.makedirs(TASKS_DIR, exist_ok=True)
 # قِيم افتراضية للتأخير (يمكن تغييرها من الواجهة أو Env)
 DEFAULT_MIN_DELAY = int(os.getenv("DEFAULT_MIN_DELAY", "200"))
 DEFAULT_MAX_DELAY = int(os.getenv("DEFAULT_MAX_DELAY", "250"))
-
-
-# ====== كلاس الإعدادات (يُكمّل بالمدخلات القادمة من الواجهة) ======
-from typing import Optional
 
 class Config:
     """Configuration class for bot settings (credentials & timing)."""
@@ -29,8 +59,12 @@ class Config:
         max_delay: Optional[int] = None,
     ):
         # بيانات الدخول: إما من الواجهة أو من متغيرات البيئة
-        self.bluesky_handle: Optional[str] = bluesky_handle or os.getenv("BLUESKY_HANDLE") or os.getenv("BSKY_HANDLE")
-        self.bluesky_password: Optional[str] = bluesky_password or os.getenv("BLUESKY_PASSWORD") or os.getenv("BSKY_PASSWORD")
+        self.bluesky_handle: Optional[str] = (
+            bluesky_handle or os.getenv("BLUESKY_HANDLE") or os.getenv("BSKY_HANDLE")
+        )
+        self.bluesky_password: Optional[str] = (
+            bluesky_password or os.getenv("BLUESKY_PASSWORD") or os.getenv("BSKY_PASSWORD")
+        )
 
         # التأخيرات: من الواجهة أو الافتراضي
         self.min_delay: int = int(min_delay if min_delay is not None else DEFAULT_MIN_DELAY)
@@ -46,7 +80,8 @@ class Config:
         if self.min_delay < 0 or self.max_delay < 0:
             raise ValueError("Delay values must be positive")
         if self.min_delay > self.max_delay:
-            raise ValueError("Minimum delay cannot be greater than maximum delay")
+            # سويّ الترتيب كحماية بدل ما نرمي خطأ
+            self.min_delay, self.max_delay = self.max_delay, self.min_delay
         if self.api_timeout < 1:
             raise ValueError("API timeout must be at least 1 second")
         if self.max_retries < 1:
