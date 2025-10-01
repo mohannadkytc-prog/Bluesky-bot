@@ -1,9 +1,8 @@
-# -*- coding: utf-8 -*-
 """
 Bluesky Bot + Flask wrapper
-- يجمع جمهور منشور (معجبون أو مُعيدو نشر) حسب الاختيار من الواجهة
-- يرد على آخر منشور لكل مستخدم برسالة عشوائية من القائمة
-- يحفظ التقدم تلقائياً (مع fallback إلى /tmp إن لم تتوفر أذونات DATA_DIR)
+- يجمع الجمهور من (المعجبين / معيدو النشر / الاثنين) لكل رابط، ثم يرد على آخر منشور لكل مستخدم
+- الواجهة ترسل: post_urls[], message_templates[], bluesky_handle, bluesky_password,
+  min_delay, max_delay, audience_type ∈ {likers, reposters, both}
 """
 
 import os
@@ -12,7 +11,7 @@ import random
 import logging
 import threading
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, render_template, request
@@ -20,371 +19,245 @@ from flask import Flask, jsonify, render_template, request
 from atproto import Client
 from atproto.exceptions import AtProtocolError
 
-from config import PROGRESS_PATH, DEFAULT_MIN_DELAY, DEFAULT_MAX_DELAY
-from utils import (
-    resolve_post_from_url,
-    save_progress,
-    load_progress,
-    validate_message_template,
-    format_duration,
-)
+from utils import resolve_post_from_url  # يعتمد على utils.py الذي أرسلته سابقاً
+from config import Config as AppConfig, PROGRESS_PATH  # يستخدم /data أو /tmp تلقائياً
 
-# ---------- إعداد اللوج ----------
+# ===== إعداد اللوج =====
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bluesky-bot")
 
 
-# ---------- نماذج الإعدادات الداخلية ----------
+# ================== منطق البوت ==================
 @dataclass
-class Config:
+class RuntimeConfig:
     bluesky_handle: str
     bluesky_password: str
-    min_delay: int = DEFAULT_MIN_DELAY
-    max_delay: int = DEFAULT_MAX_DELAY
+    min_delay: int
+    max_delay: int
 
 
-# ---------- حالة التشغيل/التقدّم (لواجهة الحالة) ----------
-runtime_stats = {
-    "status": "Idle",                # Idle | Running | Stopped
-    "current_task": None,            # نص وصفي
-    "session_uptime": "0s",
-    "last_update_ts": 0,
-}
-bot_progress = {
-    "completed_runs": 0,            # عدد المستخدمين الذين تم إرسال رد لهم
-    "failed_runs": 0,               # عدد المستخدمين الذين فشل إرسال الرد لهم
-    "total_bot_runs": 0,            # المجموع
-    "success_rate": 0.0,
-    "total_mentions_sent": 0,       # نفس completed حالياً؛ احتفظنا به للتوسع
-    "total_followers": 0,           # غير مستخدم الآن (للتوسع لاحقاً)
-}
-
-def _stats_touch():
-    runtime_stats["last_update_ts"] = int(time.time())
-
-
-def update_progress_counts(done: int, failed: int) -> None:
-    bot_progress["completed_runs"] = done
-    bot_progress["failed_runs"] = failed
-    total = done + failed
-    bot_progress["total_bot_runs"] = total
-    bot_progress["success_rate"] = (done / total) if total else 0.0
-    bot_progress["total_mentions_sent"] = done
-    _stats_touch()
-
-
-# ---------- البوت الرئيسي ----------
 class BlueSkyBot:
-    def __init__(self, config: Config, progress_key: str):
-        self.config = config
+    def __init__(self, runtime_cfg: RuntimeConfig):
+        self.runtime_cfg = runtime_cfg
         self.client = Client()
-        self.progress_key = progress_key  # مفتاح التقدم (حسب الحساب/الرابط)
-        self.stop_event = threading.Event()
+        self.progress_cb = None
 
-    # ===== لوجين =====
     def login(self) -> None:
-        log.info(f"🔑 تسجيل الدخول: {self.config.bluesky_handle}")
-        self.client.login(self.config.bluesky_handle, self.config.bluesky_password)
+        log.info(f"🔑 تسجيل الدخول: {self.runtime_cfg.bluesky_handle}")
+        self.client.login(self.runtime_cfg.bluesky_handle, self.runtime_cfg.bluesky_password)
 
-    # ===== أدوات جلب الجمهور =====
-    def _iter_likers(self, post_uri: str) -> List[Dict[str, Any]]:
-        """إرجاع قائمة المعجبين (actors) مع ترقيم صفحات"""
-        out = []
-        cursor = None
-        while True:
-            res = self.client.app.bsky.feed.get_likes({"uri": post_uri, "limit": 100, "cursor": cursor})
-            for item in getattr(res, "likes", []):
-                if getattr(item, "actor", None):
-                    out.append(item.actor)
-            cursor = getattr(res, "cursor", None)
-            if not cursor:
-                break
-        return out
+    def _sleep_with_log(self) -> None:
+        delay = random.randint(self.runtime_cfg.min_delay, self.runtime_cfg.max_delay)
+        log.info(f"⏳ الانتظار {delay} ثانية قبل المستخدم التالي")
+        time.sleep(delay)
 
-    def _iter_reposters(self, post_uri: str) -> List[Dict[str, Any]]:
-        """إرجاع قائمة مُعيدي النشر (actors) مع ترقيم صفحات"""
-        out = []
-        cursor = None
-        while True:
-            res = self.client.app.bsky.feed.get_reposted_by({"uri": post_uri, "limit": 100, "cursor": cursor})
-            for actor in getattr(res, "reposted_by", []):
-                out.append(actor)
-            cursor = getattr(res, "cursor", None)
-            if not cursor:
-                break
-        return out
-
-    def _get_last_post_of_actor(self, actor_handle_or_did: str) -> Optional[Tuple[str, str]]:
-        """
-        يجلب آخر منشور (uri, cid) لحساب (actor) حتى يمكن الرد عليه.
-        نستخدم get_author_feed(limit=1).
-        """
-        try:
-            # بعض الاستدعاءات تقبل handle أو did مباشرة
-            feed = self.client.app.bsky.feed.get_author_feed(
-                {"actor": actor_handle_or_did, "limit": 1, "filter": "posts_with_replies"}  # أضمن وجود post
-            )
-            items = getattr(feed, "feed", [])
-            if not items:
-                return None
-            post = getattr(items[0], "post", None)
-            if not post:
-                return None
-            return post.uri, post.cid
-        except Exception as e:
-            log.error(f"⚠️ فشل جلب آخر منشور للمستخدم {actor_handle_or_did}: {e}")
-            return None
-
-    def _reply_to_post(self, target_uri: str, target_cid: str, text: str) -> None:
-        """إرسال رد على منشور معيّن."""
+    def _reply_to_post(self, post_uri: str, post_cid: str, msg: str) -> None:
         self.client.com.atproto.repo.create_record({
             "repo": self.client.me.did,
             "collection": "app.bsky.feed.post",
             "record": {
                 "$type": "app.bsky.feed.post",
-                "text": text,
+                "text": msg,
                 "createdAt": datetime.now(timezone.utc).isoformat(),
                 "reply": {
-                    "root": {"uri": target_uri, "cid": target_cid},
-                    "parent": {"uri": target_uri, "cid": target_cid},
+                    "root": {"uri": post_uri, "cid": post_cid},
+                    "parent": {"uri": post_uri, "cid": post_cid},
                 },
             },
         })
 
-    # ===== تنفيذ المهمة =====
     def process_audience(
         self,
-        source_post_url: str,
-        audience_type: str,              # "likers" | "reposters"
+        post_urls: List[str],
         messages: List[str],
-        min_delay: int,
-        max_delay: int,
+        audience_type: str,  # likers | reposters | both
     ) -> Dict[str, int]:
         """
-        يجمع الجمهور المستهدف من منشور محدّد ويرسل ردًّا على آخر منشور لكل مستخدم.
-        يحفظ التقدم باستمرار في PROGRESS_PATH تحت progress_key.
+        يجمع جمهور المنشور (likers/reposters) ويرد على آخر منشور لكل مستخدم.
         """
         self.login()
 
-        # استعادة التقدّم السابق (إن وجد)
-        progress = load_progress(PROGRESS_PATH, self.progress_key) or {
-            "done_user_dids": [],   # مستخدمون تم إنجازهم
-            "failed_user_dids": [], # مستخدمون فشلوا
-            "cursor": None,
-            "last_source": source_post_url,
-            "audience_type": audience_type,
-        }
-        done = len(progress.get("done_user_dids", []))
-        failed = len(progress.get("failed_user_dids", []))
-        update_progress_counts(done, failed)
+        completed = 0
+        failed = 0
 
-        # حلّ رابط المنشور
-        ref = resolve_post_from_url(self.client, source_post_url)
-        if not ref:
-            raise RuntimeError("لم أتمكن من حلّ رابط المنشور.")
+        # 1) اجمع كل الـ DIDs المستهدفة من كل رابط
+        target_dids = set()
 
-        post_uri = ref["uri"]
-
-        # جمع الجمهور
-        if audience_type == "likers":
-            actors = self._iter_likers(post_uri)
-        elif audience_type == "reposters":
-            actors = self._iter_reposters(post_uri)
-        else:
-            raise ValueError("audience_type يجب أن يكون 'likers' أو 'reposters'.")
-
-        log.info(f"👥 تم العثور على {len(actors)} مستخدمين في الجمهور ({audience_type}).")
-
-        # فلترة من تمّت معالجتهم سابقًا
-        already = set(progress.get("done_user_dids", [])) | set(progress.get("failed_user_dids", []))
-        queue = []
-        for a in actors:
-            did = getattr(a, "did", None)
-            handle = getattr(a, "handle", None)
-            if not did:
-                continue
-            if did in already:
-                continue
-            queue.append({"did": did, "handle": handle})
-
-        log.info(f"🧾 قائمة المعالجة: {len(queue)} مستخدمين جدد بعد استبعاد المنجزين سابقًا.")
-
-        # حلقة المعالجة
-        for idx, user in enumerate(queue, 1):
-            if self.stop_event.is_set():
-                log.warning("⏸️ تم إيقاف المهمة بواسطة المستخدم.")
-                break
-
-            runtime_stats["status"] = "Running"
-            runtime_stats["current_task"] = f"Processing audience: {idx}/{len(queue)}"
-            _stats_touch()
-
-            did = user["did"]
-            handle = user["handle"] or did
+        for url in post_urls:
             try:
-                # آخر منشور للمستخدم
-                last_ref = self._get_last_post_of_actor(did)
-                if not last_ref:
-                    log.warning(f"لا يوجد منشور حديث للمستخدم: {handle}")
-                    progress.setdefault("failed_user_dids", []).append(did)
-                    failed += 1
-                    update_progress_counts(done, failed)
-                    save_progress(PROGRESS_PATH, self.progress_key, progress)
+                post_ref = resolve_post_from_url(self.client, url)
+                if not post_ref:
+                    log.error(f"❌ فشل حلّ الرابط: {url}")
                     continue
 
-                target_uri, target_cid = last_ref
+                uri = post_ref["uri"]
+                log.info(f"🎯 معالجة المصدر '{audience_type}' لهذا الرابط: {url}")
 
-                # اختيار رسالة صالحة
-                valid_msgs = [m.strip() for m in messages if validate_message_template(m.strip())]
-                if not valid_msgs:
-                    valid_msgs = ["🙏 Thank you!"]
-                msg = random.choice(valid_msgs)
+                if audience_type in ("likers", "both"):
+                    try:
+                        likes_resp = self.client.app.bsky.feed.get_likes({"uri": uri})
+                        for item in getattr(likes_resp, "likes", []) or []:
+                            if getattr(item, "actor", None) and getattr(item.actor, "did", None):
+                                target_dids.add(item.actor.did)
+                    except Exception as e:
+                        log.error(f"⚠️ get_likes فشل: {e}")
 
-                # إرسال الرد
-                self._reply_to_post(target_uri, target_cid, msg)
-                log.info(f"💬 Reply OK -> @{handle}: {msg[:60]}")
+                if audience_type in ("reposters", "both"):
+                    try:
+                        reps_resp = self.client.app.bsky.feed.get_reposted_by({"uri": uri})
+                        for actor in getattr(reps_resp, "reposted_by", []) or []:
+                            if getattr(actor, "did", None):
+                                target_dids.add(actor.did)
+                    except Exception as e:
+                        log.error(f"⚠️ get_reposted_by فشل: {e}")
 
-                # تحديث التقدّم
-                progress.setdefault("done_user_dids", []).append(did)
-                done += 1
-                update_progress_counts(done, failed)
-                save_progress(PROGRESS_PATH, self.progress_key, progress)
+            except Exception as e:
+                log.error(f"⚠️ خطأ أثناء جمع الجمهور من {url}: {e}")
+
+        log.info(f"👥 عدد المستخدمين المستهدفين الإجمالي: {len(target_dids)}")
+
+        # 2) رد على آخر منشور لكل DID
+        for did in list(target_dids):
+            try:
+                feed = self.client.app.bsky.feed.get_author_feed({"actor": did, "limit": 1})
+                items = getattr(feed, "feed", []) or []
+                if not items:
+                    log.info(f"ℹ️ لا يوجد منشورات للمستخدم {did}")
+                    continue
+
+                post = items[0].post
+                if not post or not post.uri or not post.cid:
+                    log.info(f"ℹ️ منشور غير صالح للمستخدم {did}")
+                    continue
+
+                msg = random.choice(messages) if messages else "🙏"
+                self._reply_to_post(post.uri, post.cid, msg)
+                log.info(f"💬 Reply OK: {did} ← {msg[:40]}…")
+                completed += 1
 
             except AtProtocolError as e:
-                log.error(f"⚠️ بروتوكول: فشل الرد على @{handle}: {e}")
-                progress.setdefault("failed_user_dids", []).append(did)
+                log.error(f"❌ بروتوكول فشل {did}: {e}")
                 failed += 1
-                update_progress_counts(done, failed)
-                save_progress(PROGRESS_PATH, self.progress_key, progress)
             except Exception as e:
-                log.error(f"⚠️ خطأ عام عند @{handle}: {e}")
-                progress.setdefault("failed_user_dids", []).append(did)
+                log.error(f"❌ خطأ عام عند الرد على {did}: {e}")
                 failed += 1
-                update_progress_counts(done, failed)
-                save_progress(PROGRESS_PATH, self.progress_key, progress)
 
-            # تأخير بين المستخدمين
-            delay = random.randint(int(min_delay), int(max_delay))
-            log.info(f"⏳ الانتظار {delay} ثانية قبل المستخدم التالي…")
-            for _ in range(delay):
-                if self.stop_event.is_set():
-                    break
-                time.sleep(1)
+            # تحديث التقدم + التأخير
+            if self.progress_cb:
+                self.progress_cb(completed, failed)
+            self._sleep_with_log()
 
-        return {"completed": done, "failed": failed}
+        return {"completed": completed, "failed": failed}
 
 
-# ---------- Flask App ----------
-app = Flask(__name__, template_folder="templates")
+# ================== خادم الويب (Flask) ==================
+app = Flask(__name__)
+
+runtime_stats = {
+    "status": "Idle",
+    "current_task": None,
+    "session_uptime": "0s",
+}
+bot_progress = {
+    "completed_runs": 0,
+    "failed_runs": 0,
+    "total_bot_runs": 0,
+    "success_rate": 0.0,
+}
 
 bot_thread: Optional[threading.Thread] = None
 bot_instance: Optional[BlueSkyBot] = None
 
 
+def update_progress(completed: int, failed: int) -> None:
+    bot_progress["completed_runs"] = completed
+    bot_progress["failed_runs"] = failed
+    total = completed + failed
+    bot_progress["total_bot_runs"] = total
+    bot_progress["success_rate"] = (completed / total) if total else 0.0
+
+
 @app.route("/")
 def index():
-    # صفحة الواجهة (persistent.html)
-    return render_template("persistent.html")
+    # نمرر مسار ملف التقدم للواجهة للعرض فقط
+    return render_template("persistent.html", progress_path=PROGRESS_PATH)
 
 
 @app.post("/queue_task")
 def queue_task():
     """
-    يستقبل JSON من الواجهة:
-    {
-        "post_url": "...",                  (أو post_urls[0]؛ نستخدم واحد فقط هنا)
-        "messages": ["...", "..."],
-        "bluesky_handle": "...",
-        "bluesky_password": "...",
-        "audience_type": "likers" | "reposters",
-        "min_delay": 200,
-        "max_delay": 250
-    }
+    API لبدء المهمة من الواجهة.
     """
     global bot_thread, bot_instance
 
-    try:
-        payload = request.get_json(force=True) or {}
-        log.info(f"📥 Payload: {payload}")
-    except Exception:
-        return jsonify({"error": "Bad JSON"}), 400
+    data = request.get_json(force=True)
+    log.info(f"📥 Payload: {data}")
 
-    post_url = payload.get("post_url") or (payload.get("post_urls") or [None])[0]
-    messages = payload.get("messages") or payload.get("message_templates") or []
-    bluesky_handle = payload.get("bluesky_handle") or os.getenv("BLUESKY_HANDLE") or os.getenv("BSKY_HANDLE")
-    bluesky_password = payload.get("bluesky_password") or os.getenv("BLUESKY_PASSWORD") or os.getenv("BSKY_PASSWORD")
-    audience_type = payload.get("audience_type", "likers")  # likers | reposters
-    min_delay = int(payload.get("min_delay", DEFAULT_MIN_DELAY))
-    max_delay = int(payload.get("max_delay", DEFAULT_MAX_DELAY))
+    # 1) قراءة المدخلات
+    post_urls = data.get("post_urls") or [data.get("post_url")]
+    post_urls = [u for u in (post_urls or []) if u]
 
-    if not (post_url and bluesky_handle and bluesky_password):
-        return jsonify({"error": "❌ البيانات ناقصة: post_url / handle / password"}), 400
+    messages = data.get("message_templates") or data.get("messages") or []
+    bluesky_handle = data.get("bluesky_handle")
+    bluesky_password = data.get("bluesky_password")
 
-    if min_delay > max_delay:
-        min_delay, max_delay = max_delay, min_delay
+    min_delay = int(data.get("min_delay")) if data.get("min_delay") else None
+    max_delay = int(data.get("max_delay")) if data.get("max_delay") else None
 
-    # مفتاح التقدم: حساب + رابط
-    progress_key = f"{bluesky_handle}::{post_url}::{audience_type}"
+    audience_type = data.get("audience_type", "likers")  # likers | reposters | both
 
-    # إنشاء وتهيئة البوت
-    cfg = Config(
+    # 2) إذا لم تُرسل حقول، نسمح بالقيم الافتراضية من AppConfig
+    app_cfg = AppConfig(
         bluesky_handle=bluesky_handle,
         bluesky_password=bluesky_password,
         min_delay=min_delay,
         max_delay=max_delay,
     )
-    bot_instance = BlueSkyBot(cfg, progress_key)
+    if not app_cfg.is_valid() or not post_urls:
+        return jsonify({"error": "❌ البيانات ناقصة (handle/password/post_urls)"}), 400
+    if not messages:
+        messages = ["🙏 Thank you for supporting."]
 
-    # مسح أي إيقاف سابق
-    bot_instance.stop_event.clear()
+    runtime_cfg = RuntimeConfig(
+        bluesky_handle=app_cfg.bluesky_handle,
+        bluesky_password=app_cfg.bluesky_password,
+        min_delay=app_cfg.min_delay,
+        max_delay=app_cfg.max_delay,
+    )
+    bot = BlueSkyBot(runtime_cfg)
+    bot.progress_cb = update_progress
 
+    # 3) عامل تشغيل بالخلفية
     def run_bot():
-        start_ts = time.time()
+        start = time.time()
         runtime_stats["status"] = "Running"
-        runtime_stats["current_task"] = "Processing audience"
-        _stats_touch()
+        runtime_stats["current_task"] = f"Processing audience: {audience_type}"
 
-        try:
-            result = bot_instance.process_audience(
-                source_post_url=post_url,
-                audience_type=audience_type,
-                messages=messages,
-                min_delay=min_delay,
-                max_delay=max_delay,
-            )
-            update_progress_counts(result["completed"], result["failed"])
-        except Exception as e:
-            log.error(f"❌ فشل تنفيذ المهمة: {e}")
-        finally:
-            runtime_stats["status"] = "Idle"
-            runtime_stats["current_task"] = None
-            runtime_stats["session_uptime"] = format_duration(int(time.time() - start_ts))
-            _stats_touch()
+        result = bot.process_audience(post_urls, messages, audience_type)
 
-    # تشغيل بالخلفية
+        runtime_stats["status"] = "Idle"
+        runtime_stats["current_task"] = None
+        runtime_stats["session_uptime"] = f"{int(time.time() - start)}s"
+
+        update_progress(result["completed"], result["failed"])
+
+    bot_instance = bot
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
 
     return jsonify({"status": "✅ المهمة بدأت"})
 
 
-@app.post("/stop_task")
+@app.route("/stop_task", methods=["GET", "POST"])
 def stop_task():
-    if bot_instance:
-        bot_instance.stop_event.set()
     runtime_stats["status"] = "Stopped"
-    runtime_stats["current_task"] = None
-    _stats_touch()
     return jsonify({"status": "🛑 تم الإيقاف"})
 
 
-@app.post("/resume_task")
+@app.route("/resume_task", methods=["GET", "POST"])
 def resume_task():
-    # الاستئناف يعني إرسال طلب queue_task جديد بنفس المعطيات من الواجهة
-    # هنا فقط نحدث الحالة بصريًا.
     runtime_stats["status"] = "Running"
-    _stats_touch()
-    return jsonify({"status": "▶️ تم الاستئناف (أرسلي بدء المهمة من الواجهة لإكمال المعالجة)"})
+    return jsonify({"status": "▶️ تم الاستئناف"})
 
 
 @app.get("/detailed_progress")
@@ -392,7 +265,7 @@ def detailed_progress():
     return jsonify({"runtime_stats": runtime_stats, "bot_progress": bot_progress})
 
 
-# Aliases اختيارية
+# Aliases إضافية
 @app.post("/queue")
 def queue_alias():
     return queue_task()
