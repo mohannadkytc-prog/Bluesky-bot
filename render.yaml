@@ -1,260 +1,37 @@
 services:
-  - name: bluesky-bot-01
-    type: web
+  - type: web
+    name: bluesky-bot-1
     env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-01-disk
-      mountPath: /var/data
-      sizeGB: 1
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    branch: main
+    repo: https://github.com/mohannadkytc-pro/Bluesky-bot
 
-  - name: bluesky-bot-02
-    type: web
+  - type: web
+    name: bluesky-bot-2
     env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-02-disk
-      mountPath: /var/data
-      sizeGB: 1
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    branch: main
+    repo: https://github.com/mohannadkytc-pro/Bluesky-bot
 
-  - name: bluesky-bot-03
-    type: web
+  - type: web
+    name: bluesky-bot-3
     env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-03-disk
-      mountPath: /var/data
-      sizeGB: 1
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    branch: main
+    repo: https://github.com/mohannadkytc-pro/Bluesky-bot
 
-  - name: bluesky-bot-04
-    type: web
+  # كرر نفس البلوك لغاية 20
+  - type: web
+    name: bluesky-bot-20
     env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-04-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-05
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-05-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-06
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-06-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-07
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-07-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-08
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-08-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-09
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-09-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-10
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-10-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-11
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-11-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-12
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-12-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-13
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-13-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-14
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-14-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-15
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-15-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-16
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-16-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-17
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-17-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-18
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-18-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-19
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-19-disk
-      mountPath: /var/data
-      sizeGB: 1
-
-  - name: bluesky-bot-20
-    type: web
-    env: python
-    plan: starter
-    region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn bluesky_bot:app --workers 1 --timeout 120
-    autoDeploy: true
-    disk:
-      name: bluesky-bot-20-disk
-      mountPath: /var/data
-      sizeGB: 1
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn bluesky_bot:app --workers 1 --timeout 120"
+    branch: main
+    repo: https://github.com/mohannadkytc-pro/Bluesky-bot
