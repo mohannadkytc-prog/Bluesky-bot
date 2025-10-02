@@ -1,115 +1,212 @@
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Persistent Bluesky Bot</title>
-  <style>
-    body{font-family:system-ui,Segoe UI,Tahoma,Arial;background:#f6f7fb;margin:0}
-    .wrap{max-width:900px;margin:24px auto;padding:16px}
-    .card{background:#fff;border-radius:12px;box-shadow:0 6px 20px rgba(0,0,0,.06);padding:18px;margin-bottom:18px}
-    .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-    label{font-size:14px;color:#333;margin:8px 0;display:block}
-    input,select,textarea{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #ddd;border-radius:10px;background:#fafafa}
-    textarea{min-height:140px;white-space:pre-wrap}
-    .btns{display:flex;gap:10px;flex-wrap:wrap}
-    button{border:0;border-radius:10px;padding:10px 14px;font-weight:600;cursor:pointer}
-    .success{background:#00c853;color:#fff}
-    .danger{background:#ff5252;color:#fff}
-    .primary{background:#2979ff;color:#fff}
-    .muted{background:#eceff1}
-    .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
-    .kpi{background:#fff;border:1px dashed #e0e0e0;border-radius:10px;padding:12px;text-align:center}
-    .kpi h3{margin:2px 0 8px;font-size:14px;color:#666}
-    .kpi div{font-size:18px;font-weight:700}
-    .hint{font-size:13px;color:#555;margin-top:8px}
-    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Bluesky Bot Control</title>
+<style>
+ body{font-family:system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans", Tahoma, Arial; background:#f8f9fb; color:#222; margin:0;}
+ .container{max-width:900px; margin:24px auto; padding:0 12px;}
+ h1{font-size:24px; margin:0 0 12px;}
+ .card{background:#fff; border:1px solid #e8e8ef; border-radius:14px; padding:16px; margin:12px 0; box-shadow:0 1px 0 rgba(0,0,0,.03);}
+ label{display:block; margin:8px 0 6px; font-weight:600}
+ input, textarea, select{width:100%; border:1px solid #dfe3ef; border-radius:10px; padding:10px 12px; font-size:15px; background:#fff;}
+ textarea{min-height:140px; white-space:pre-wrap}
+ .row{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+ .row3{display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px}
+ .btns{display:flex; gap:10px; flex-wrap:wrap}
+ .btn{border:0; border-radius:12px; padding:11px 14px; font-weight:700; cursor:pointer}
+ .btn-start{background:#15a34a; color:#fff}
+ .btn-stop{background:#ef4444; color:#fff}
+ .btn-resume{background:#0ea5e9; color:#fff}
+ .btn-refresh{background:#e2e8f0}
+ .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size:12px}
+ .stat-grid{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+ .stat{background:#fff; border:1px solid #e7e7ee; border-radius:12px; padding:14px}
+ .stat b{font-size:22px}
+ .ok{color:#0b8a44}
+ .fail{color:#b42318}
+ .muted{color:#6b7280}
+ pre{white-space:pre-wrap}
+ .errorbox{background:#fff5f5; border:1px solid #f1c0c0; border-radius:12px; padding:10px}
+</style>
 </head>
 <body>
-<div class="wrap">
+<div class="container">
+  <h1>لوحة تحكم البوت</h1>
 
   <div class="card">
-    <h2>Persistent Bluesky Bot</h2>
-    <p>يعمل بشكل مستمر بالخلفية. استخدم <b>App Password</b> من إعدادات Bluesky.</p>
+    <div class="row">
+      <div>
+        <label>مُعرّف/إيميل Bluesky</label>
+        <input id="handle" placeholder="user.bsky.social" />
+      </div>
+      <div>
+        <label>كلمة مرور التطبيق</label>
+        <input id="password" type="password" placeholder="App Password" />
+      </div>
+    </div>
+
+    <label>رابط البوست (المصدر)</label>
+    <input id="post_url" placeholder="https://bsky.app/profile/.../post/..." />
+
+    <div class="row">
+      <div>
+        <label>نوع المعالجة</label>
+        <select id="process_type">
+          <option value="likes">المعجبون فقط (Likes)</option>
+          <option value="reposts">إعادات نشر فقط (Reposts)</option>
+        </select>
+      </div>
+      <div></div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label>الحد الأدنى للتأخير (ثوانٍ)</label>
+        <input id="min_delay" type="number" value="200" />
+      </div>
+      <div>
+        <label>الحد الأقصى للتأخير (ثوانٍ)</label>
+        <input id="max_delay" type="number" value="250" />
+      </div>
+    </div>
+
+    <label>الرسائل (سطر لكل رسالة)</label>
+    <textarea id="messages" placeholder="سطر لكل رسالة..."></textarea>
+
+    <div class="btns" style="margin-top:10px">
+      <button class="btn btn-start" onclick="start()">بدء المهمة ✅</button>
+      <button class="btn btn-stop" onclick="stop()">إيقاف ⛔</button>
+      <button class="btn btn-resume" onclick="resume()">استئناف ▶️</button>
+      <button class="btn btn-refresh" onclick="refresh()">تحديث الحالة 🔄</button>
+    </div>
+
+    <div class="muted" style="margin-top:8px">يحفظ التقدم تلقائيًا في ملف <span class="mono">progress.json</span> حسب الحساب/الرابط/النوع.</div>
   </div>
 
   <div class="card">
-    <form id="form">
-      <div class="row">
-        <div>
-          <label>يوزر Bluesky</label>
-          <input name="handle" placeholder="example.bsky.social"/>
-        </div>
-        <div>
-          <label>App Password</label>
-          <input name="password" placeholder="xxxx-xxxx-xxxx-xxxx"/>
-        </div>
-      </div>
+    <h3 style="margin:0 0 10px">حالة التشغيل</h3>
+    <div class="row3">
+      <div class="stat"><div class="muted">الحالة</div><b id="running">Idle</b></div>
+      <div class="stat"><div class="muted">إجمالي الجمهور</div><b id="total_audience">0</b></div>
+      <div class="stat"><div class="muted">المنجز</div><b id="done">0</b></div>
+    </div>
+    <div class="row3" style="margin-top:12px">
+      <div class="stat"><div class="muted">نجاح</div><b class="ok" id="ok_count">0</b></div>
+      <div class="stat"><div class="muted">فشل</div><b class="fail" id="fail_count">0</b></div>
+      <div class="stat"><div class="muted">نسبة النجاح</div><b id="success_rate">0%</b></div>
+    </div>
 
-      <label>رابط البوست (سيجلب منه الجمهور حسب نوع المعالجة)</label>
-      <input name="post_url" placeholder="https://bsky.app/profile/.../post/..."/>
-
-      <div class="row">
-        <div>
-          <label>نوع المعالجة</label>
-          <select name="mode">
-            <option value="likes">المعجبون فقط (Likes)</option>
-            <option value="reposts">معيدو النشر فقط (Reposts)</option>
-          </select>
-        </div>
-        <div></div>
-      </div>
-
-      <div class="row">
-        <div>
-          <label>الحد الأدنى للتأخير (ثوان)</label>
-          <input name="min_delay" value="200"/>
-        </div>
-        <div>
-          <label>الحد الأقصى للتأخير (ثوان)</label>
-          <input name="max_delay" value="250"/>
-        </div>
-      </div>
-
-      <label>الرسائل (سطر لكل رسالة، سيختار عشوائيًا لكل مستخدم)</label>
-      <textarea name="messages" placeholder="Message 1&#10;Message 2&#10;Message 3"></textarea>
-
-      <div class="btns" style="margin-top:10px">
-        <button type="button" class="success" onclick="start()">بدء المهمة ✅</button>
-        <button type="button" class="danger" onclick="stop()">إيقاف ⛔</button>
-        <button type="button" class="primary" onclick="resume()">استئناف ▶️</button>
-        <button type="button" class="muted" onclick="refresh()">تحديث الحالة 🔄</button>
-      </div>
-      <div class="hint">يحفظ التقدم تلقائيًا في ملف <span class="mono">{{ progress_path }}</span>.</div>
-    </form>
-  </div>
-
-  <div class="card">
-    <h3>حالة التشغيل</h3>
-    <div id="status">
-      <div>الحالة الحالية: <b id="running">—</b></div>
-      <div class="hint">ملخص التقدم لكل مفتاح (يوزر|رابط|نوع):</div>
-      <pre class="mono" id="progress" style="white-space:pre-wrap;background:#f8f8f8;border-radius:8px;padding:10px;overflow:auto;max-height:300px"></pre>
+    <div style="margin-top:14px">
+      <div class="muted" style="font-weight:600; margin-bottom:6px">آخر خطأ</div>
+      <div id="last_error" class="errorbox mono">—</div>
     </div>
   </div>
 
+  <div class="card">
+    <h3 style="margin-top:0">تفاصيل التقدم (حسب المفتاح)</h3>
+    <pre class="mono" id="progress" style="background:#f7f7fb; border:1px solid #eee; border-radius:10px; padding:10px; max-height:420px; overflow:auto"></pre>
+    <div id="details"></div>
+  </div>
 </div>
 
 <script>
-async function call(url, data){
-  const resp = await fetch(url, {method:'POST', body: new FormData(document.getElementById('form'))});
-  return resp.json();
+async function post(url, data){
+  const form = new FormData();
+  Object.entries(data).forEach(([k,v])=>form.append(k, v));
+  const r = await fetch(url, {method:'POST', body: form});
+  return r.json();
 }
-async function start(){ const r = await call('/start'); alert(r.ok? 'بدأت المهمة' : ('خطأ: '+r.msg)); refresh(); }
-async function stop(){ const r = await call('/stop'); alert('تم إيقاف المهمة'); refresh(); }
-async function resume(){ const r = await call('/resume'); alert(r.ok? 'استئناف' : ('خطأ: '+r.msg)); refresh(); }
+
+function readForm(){
+  return {
+    handle: document.getElementById('handle').value.trim(),
+    password: document.getElementById('password').value,
+    post_url: document.getElementById('post_url').value.trim(),
+    process_type: document.getElementById('process_type').value,
+    min_delay: document.getElementById('min_delay').value,
+    max_delay: document.getElementById('max_delay').value,
+    messages: document.getElementById('messages').value
+  };
+}
+
+async function start(){
+  const r = await post('/start', readForm());
+  if(!r.ok) alert(r.error || 'خطأ');
+  refresh();
+}
+
+async function stop(){
+  const f = readForm();
+  const r = await post('/stop', {handle:f.handle, post_url:f.post_url, process_type:f.process_type});
+  if(!r.ok) alert(r.error || 'خطأ');
+  refresh();
+}
+
+async function resume(){
+  const r = await post('/resume', readForm());
+  if(!r.ok) alert(r.error || 'خطأ');
+  refresh();
+}
+
 async function refresh(){
   const r = await fetch('/status').then(r=>r.json());
   document.getElementById('running').textContent = r.running ? 'Running' : 'Idle';
-  document.getElementById('progress').textContent = JSON.stringify(r.progress, null, 2);
+
+  // اختر أول مفتاح (أو طابِق الحالي حسب الحقول)
+  const f = readForm();
+  const key = `${f.handle}|${f.post_url}|${f.process_type}`;
+  const prog = (r.progress && r.progress[key]) ? r.progress[key] : null;
+
+  // ملخص عام
+  const sum = (r.summary && r.summary[key]) ? r.summary[key] : null;
+  if(sum){
+    document.getElementById('total_audience').textContent = sum.total_audience || 0;
+    document.getElementById('done').textContent = sum.done || 0;
+    document.getElementById('ok_count').textContent = sum.ok || 0;
+    document.getElementById('fail_count').textContent = sum.fail || 0;
+    const rate = (sum.ok || 0) + (sum.fail || 0) > 0 ? Math.round((sum.ok/(sum.ok+sum.fail))*100) : 0;
+    document.getElementById('success_rate').textContent = rate + '%';
+    document.getElementById('last_error').textContent = sum.last_error || '—';
+  } else {
+    document.getElementById('total_audience').textContent = '0';
+    document.getElementById('done').textContent = '0';
+    document.getElementById('ok_count').textContent = '0';
+    document.getElementById('fail_count').textContent = '0';
+    document.getElementById('success_rate').textContent = '0%';
+    document.getElementById('last_error').textContent = '—';
+  }
+
+  // طباعة التقدم كامل
+  document.getElementById('progress').textContent = JSON.stringify(r.progress || {}, null, 2);
+
+  // تفاصيل فشل/تخطي
+  const details = document.getElementById('details');
+  details.innerHTML = '';
+  if (r.progress){
+    Object.entries(r.progress).forEach(([k,job])=>{
+      const box = document.createElement('div');
+      box.className = 'card';
+      const ok = job?.stats?.ok || 0;
+      const fail = job?.stats?.fail || 0;
+      const skipped = (job?.skipped_no_posts || []).length;
+      const failures = (job?.failures || []);
+      const total = job?.total || (job?.audience ? job.audience.length : 0);
+      const done = ok + fail + skipped;
+
+      box.innerHTML = `
+        <div class="muted">مفتاح: <span class="mono">${k}</span></div>
+        <div style="margin:4px 0 8px">
+           إجمالي الجمهور: <b>${total}</b> — منجز: <b>${done}</b> — نجاح: <b class="ok">${ok}</b> — فشل: <b class="fail">${fail}</b> — بدون منشورات: <b>${skipped}</b>
+        </div>
+        ${failures.length ? `<div class="errorbox mono"><b>أخطاء (${failures.length})</b>\n${JSON.stringify(failures, null, 2)}</div>` : '<div class="muted">لا توجد أخطاء</div>'}
+      `;
+      details.appendChild(box);
+    });
+  }
 }
 refresh();
 </script>
 </body>
-</html>
+                                                                                         </html>
