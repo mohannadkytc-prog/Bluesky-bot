@@ -1,148 +1,122 @@
 """
 Utility functions for the Bluesky bot
+- يجلب معلومات البوست من رابط bsky.app
+- يحفظ/يقرأ تقدّم المهام بمفتاح مميّز
+- يتحقق من سلامة قوالب الرسائل
 """
 import re
 import json
 import logging
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
 def extract_post_info(post_url: str) -> Optional[Dict[str, str]]:
     """
-    Extract post URI parts from a Bluesky post URL
-    Example: https://bsky.app/profile/username.bsky.social/post/3k4duaz5vfs2b
+    يستخرج username و post_id من رابط Bluesky على bsky.app أو staging.bsky.app
+    مثال: https://bsky.app/profile/username.bsky.social/post/3k4duaz5vfs2b
     """
     try:
         parsed = urlparse(post_url)
-        if parsed.netloc not in ['bsky.app', 'staging.bsky.app']:
+        if parsed.netloc not in ["bsky.app", "staging.bsky.app"]:
             logger.error(f"Invalid Bluesky URL domain: {parsed.netloc}")
             return None
-        path_parts = parsed.path.strip('/').split('/')
-        if len(path_parts) != 4 or path_parts[0] != 'profile' or path_parts[2] != 'post':
+
+        parts = parsed.path.strip("/").split("/")
+        # profile/<handle>/post/<rkey>
+        if len(parts) != 4 or parts[0] != "profile" or parts[2] != "post":
             logger.error(f"Invalid URL format: {post_url}")
             return None
-        username = path_parts[1]
-        post_id = path_parts[3]
-        logger.info(f"Extracted username: {username}, post_id: {post_id}")
-        return {'username': username, 'post_id': post_id, 'url': post_url}
+
+        return {"username": parts[1], "post_id": parts[3], "url": post_url}
     except Exception as e:
-        logger.error(f"Error extracting post info from URL {post_url}: {e}")
+        logger.exception(f"extract_post_info error: {e}")
         return None
+
 
 def resolve_post_from_url(client, post_url: str) -> Optional[Dict[str, str]]:
     """
-    Resolve actual post URI and CID from a Bluesky post URL using the API
+    يحوّل رابط bsky.app إلى (uri, cid, did, post_id)
     """
     try:
         info = extract_post_info(post_url)
         if not info:
             return None
-        username = info['username']
-        post_id = info['post_id']
-        try:
-            profile = client.app.bsky.actor.get_profile({'actor': username})
-            did = profile.did
-        except Exception as e:
-            logger.error(f"Failed to resolve DID for {username}: {e}")
-            return None
+
+        username = info["username"]
+        post_id  = info["post_id"]
+
+        # احصلي على DID من الهاندل
+        prof = client.app.bsky.actor.get_profile({"actor": username})
+        did = prof.did
+
+        # صياغة at-uri للمنشور
         post_uri = f"at://{did}/app.bsky.feed.post/{post_id}"
-        try:
-            post_response = client.app.bsky.feed.get_posts({'uris': [post_uri]})
-            if post_response.posts:
-                post = post_response.posts[0]
-                return {
-                    'uri': post_uri,
-                    'cid': post.cid,
-                    'username': username,
-                    'post_id': post_id,
-                    'did': did
-                }
-        except Exception as e:
-            logger.error(f"Failed to fetch post {post_uri}: {e}")
-            return None
+
+        # احصلي على CID الحقيقي
+        posts = client.app.bsky.feed.get_posts({"uris": [post_uri]}).posts
+        if posts:
+            return {
+                "uri": post_uri,
+                "cid": posts[0].cid,
+                "did": did,
+                "post_id": post_id,
+                "username": username,
+            }
+        return None
     except Exception as e:
-        logger.error(f"Error resolving post from URL {post_url}: {e}")
+        logger.exception(f"resolve_post_from_url error: {e}")
         return None
 
-# ------------ التخزين ------------
-def save_progress(progress_file: str, post_url: str, progress_data: Dict[str, Any]):
-    """Save progress to a JSON file keyed by post_url"""
+
+# ===== حفظ/قراءة التقدّم بمفتاح =====
+
+def save_progress(progress_file: str, key: str, progress_data: Dict[str, Any]) -> None:
+    """
+    يحفظ التقدم داخل JSON واحد، تحت مفتاح مميّز (key)
+    """
     try:
         try:
-            with open(progress_file, 'r') as f:
-                all_progress = json.load(f)
+            with open(progress_file, "r", encoding="utf-8") as f:
+                all_p = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
-            all_progress = {}
-        all_progress[post_url] = progress_data
-        with open(progress_file, 'w') as f:
-            json.dump(all_progress, f, indent=2, ensure_ascii=False)
-        logger.debug(f"Progress saved for {post_url}")
-    except Exception as e:
-        logger.error(f"Failed to save progress: {e}")
+            all_p = {}
 
-def load_progress(progress_file: str, post_url: str) -> Dict[str, Any]:
-    """Load progress by post_url from JSON file"""
+        all_p[key] = progress_data
+        with open(progress_file, "w", encoding="utf-8") as f:
+            json.dump(all_p, f, ensure_ascii=False, indent=2)
+        logger.debug(f"Progress saved for key={key}")
+    except Exception as e:
+        logger.exception(f"save_progress error: {e}")
+
+
+def load_progress(progress_file: str, key: str) -> Dict[str, Any]:
+    """
+    يقرأ التقدم من الملف؛ يرجّع dict أو {} إذا غير موجود
+    """
     try:
-        with open(progress_file, 'r') as f:
-            all_progress = json.load(f)
-        return all_progress.get(post_url, {})
+        with open(progress_file, "r", encoding="utf-8") as f:
+            all_p = json.load(f)
+        return all_p.get(key, {})
     except (FileNotFoundError, json.JSONDecodeError):
-        logger.debug(f"No existing progress found for {post_url}")
         return {}
     except Exception as e:
-        logger.error(f"Failed to load progress: {e}")
+        logger.exception(f"load_progress error: {e}")
         return {}
 
-# ------------ التحقق والتهيئة ------------
+
+# ===== التحقق من الرسائل =====
+
 def validate_message_template(template: str) -> bool:
-    """Validate that the message template is safe and well-formed"""
+    """يتحقق من الطول والسلامة العامة."""
     if not template or not isinstance(template, str):
         return False
     if len(template) > 280:
         return False
-    dangerous_patterns = [r'<script', r'javascript:', r'data:', r'vbscript:', r'onclick', r'onerror']
-    for pattern in dangerous_patterns:
-        if re.search(pattern, template, re.IGNORECASE):
+
+    bad = [r"<script", r"javascript:", r"data:", r"vbscript:", r"on\w+="]
+    for pat in bad:
+        if re.search(pat, template, re.IGNORECASE):
             return False
     return True
-
-def format_duration(seconds: int) -> str:
-    if seconds < 60:
-        return f"{seconds}s"
-    elif seconds < 3600:
-        return f"{seconds // 60}m {seconds % 60}s"
-    else:
-        hours = seconds // 3600
-        minutes = (seconds % 3600) // 60
-        return f"{hours}h {minutes}m"
-
-# ------------ مساعدات للجمهور بالترتيب ------------
-def _merge_unique_ordered(
-    likers: List[Tuple[str, str]],
-    reposters: List[Tuple[str, str]],
-    mode: str
-) -> List[Tuple[str, str]]:
-    """
-    likers/reposters: قوائم من (actor, indexedAt)
-    mode: 'likers' | 'reposters' | 'both'
-    نرجّع قائمة مرتبة تصاعدياً حسب indexedAt مع إزالة التكرار (نفضّل أول ظهور).
-    """
-    combined: List[Tuple[str, str]] = []
-    if mode == 'likers':
-        combined = likers
-    elif mode == 'reposters':
-        combined = reposters
-    else:
-        combined = likers + reposters
-    # sort by indexedAt asc (الأقدم أولاً)
-    combined.sort(key=lambda x: x[1])
-    # dedupe by actor
-    seen = set()
-    ordered: List[Tuple[str, str]] = []
-    for actor, ts in combined:
-        if actor not in seen:
-            seen.add(actor)
-            ordered.append((actor, ts))
-    return ordered
