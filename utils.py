@@ -2,236 +2,145 @@
 import re
 import time
 import random
-import requests
-from typing import List, Dict, Tuple, Optional
+import json
+from typing import Dict, List, Tuple, Optional
 
-PUBLIC_API = "https://public.api.bsky.app/xrpc"
-WRITE_API  = "https://bsky.social/xrpc"
+from atproto import Client, models as M
 
+# ---------- جلسة العميل ----------
+def make_client(handle: str, password: str) -> Client:
+    """يسجّل الدخول ويعيد Client جاهز."""
+    c = Client()
+    # ملاحظة: استخدمي App Password (وليس الرقم السري العادي) لحساب Bluesky
+    c.login(handle, password)
+    return c
 
-# -----------------------------
-# جلسة مصادقة للكتابة (ردود)
-# -----------------------------
-class BskySession:
+# ---------- تحليل رابط البوست ----------
+def _parse_bsky_post_url(url: str) -> Tuple[str, str]:
     """
-    جلسة مصادقة لعمليات الكتابة على Bluesky.
-    - login(handle, password): يطلب توكن ودالة الـ DID ويجهز الهيدر.
-    - session: requests.Session مع Authorization جاهز.
-    - did: DID الخاص بالحساب.
-    """
-    def __init__(self, timeout: int = 30):
-        self.session = requests.Session()
-        self.session.headers.update({"Content-Type": "application/json"})
-        self.timeout = timeout
-        self.did: Optional[str] = None
-        self.access_jwt: Optional[str] = None
-
-    def login(self, handle: str, password: str):
-        url = f"{WRITE_API}/com.atproto.server.createSession"
-        payload = {"identifier": handle.strip(), "password": password}
-        r = self.session.post(url, json=payload, timeout=self.timeout)
-        if r.status_code != 200:
-            raise RuntimeError(f"فشل تسجيل الدخول: {r.status_code} {r.text}")
-
-        data = r.json()
-        self.access_jwt = data.get("accessJwt")
-        self.did = data.get("did")
-        if not self.access_jwt or not self.did:
-            raise RuntimeError("استجابة تسجيل الدخول ناقصة (accessJwt/did مفقود).")
-
-        # أضف Authorization لجميع الطلبات اللاحقة
-        self.session.headers["Authorization"] = f"Bearer {self.access_jwt}"
-
-    # التفاف GET/POST باستخدام نفس السشن
-    def get(self, url, **kw):
-        kw.setdefault("timeout", self.timeout)
-        return self.session.get(url, **kw)
-
-    def post(self, url, **kw):
-        kw.setdefault("timeout", self.timeout)
-        return self.session.post(url, **kw)
-
-
-# -----------------------------------
-# أدوات مساعدة: تحليل الروابط والحساب
-# -----------------------------------
-def resolve_handle_to_did(handle: str) -> str:
-    """يحوّل handle إلى DID باستخدام public api."""
-    url = f"{PUBLIC_API}/com.atproto.identity.resolveHandle"
-    r = requests.get(url, params={"handle": handle}, timeout=30)
-    if r.status_code != 200:
-        raise RuntimeError(f"فشل resolveHandle: {r.status_code} {r.text}")
-    did = r.json().get("did")
-    if not did:
-        raise RuntimeError("لم يتم إيجاد DID لهذا الـ handle")
-    return did
-
-
-def parse_bsky_post_url(url: str) -> Tuple[str, str]:
-    """
-    يُرجع (handle, rkey) من رابط بوست bsky.app
-    مثال:
-    https://bsky.app/profile/USER.handle/post/3m25wgllyis2c
+    يُعيد (actor, rkey) من رابط مثل:
+    https://bsky.app/profile/{actor}/post/{rkey}
+    - actor قد يكون handle أو did:plc:...
     """
     m = re.search(r"/profile/([^/]+)/post/([^/?#]+)", url)
     if not m:
-        raise ValueError("رابط البوست غير صالح. يجب أن يكون من شكل bsky.app/profile/.../post/...")
-    handle = m.group(1)
+        raise ValueError("رابط غير صالح لبوست Bluesky")
+    actor = m.group(1)
     rkey = m.group(2)
-    return handle, rkey
+    return actor, rkey
 
-
-def resolve_post_from_url(post_url: str) -> Tuple[str, str, str]:
+def resolve_post_from_url(client: Client, url: str) -> Tuple[str, str, str]:
     """
-    يحوّل رابط البوست إلى (uri, did, handle)
-    - uri على شكل: at://did/app.bsky.feed.post/rkey
+    من رابط التطبيق يرجع (did, rkey, at_uri)
+    at_uri = at://{did}/app.bsky.feed.post/{rkey}
     """
-    handle, rkey = parse_bsky_post_url(post_url.strip())
-    did = resolve_handle_to_did(handle)
-    uri = f"at://{did}/app.bsky.feed.post/{rkey}"
-    return uri, did, handle
+    actor, rkey = _parse_bsky_post_url(url)
 
-
-# -----------------------------------
-# جلب الجمهور (معجبين/معيدي نشر) + فلترة لا يملك بوستات
-# -----------------------------------
-def get_likers(uri: str, limit: int = 100) -> List[Dict]:
-    """
-    يُرجع قائمة المعجبين (dict) كما تعيدها واجهة Bluesky العامة.
-    """
-    url = f"{PUBLIC_API}/app.bsky.feed.getLikes"
-    # سنجلب بصفحة واحدة كافية لمعظم الحالات. يمكن لاحقاً دعم pagination
-    r = requests.get(url, params={"uri": uri, "limit": limit}, timeout=30)
-    if r.status_code != 200:
-        raise RuntimeError(f"getLikes فشل: {r.status_code} {r.text}")
-    items = r.json().get("likes", [])
-    # نحولها لصيغة أبسط: did/handle
-    result = []
-    for it in items:
-        actor = it.get("actor", {})
-        result.append({
-            "did": actor.get("did"),
-            "handle": actor.get("handle"),
-            "displayName": actor.get("displayName", ""),
-        })
-    return result
-
-
-def get_reposters(uri: str, limit: int = 100) -> List[Dict]:
-    """
-    يُرجع قائمة معيدي النشر (dict) كما تعيدها واجهة Bluesky العامة.
-    """
-    url = f"{PUBLIC_API}/app.bsky.feed.getRepostedBy"
-    r = requests.get(url, params={"uri": uri, "limit": limit}, timeout=30)
-    if r.status_code != 200:
-        raise RuntimeError(f"getRepostedBy فشل: {r.status_code} {r.text}")
-    items = r.json().get("repostedBy", [])
-    result = []
-    for actor in items:
-        result.append({
-            "did": actor.get("did"),
-            "handle": actor.get("handle"),
-            "displayName": actor.get("displayName", ""),
-        })
-    return result
-
-
-def has_posts(did: str) -> bool:
-    """
-    يفحص إذا كان المستخدم لديه أي منشورات.
-    """
-    url = f"{PUBLIC_API}/app.bsky.feed.getAuthorFeed"
-    r = requests.get(url, params={"actor": did, "limit": 1}, timeout=30)
-    if r.status_code != 200:
-        # لو فشل الاستعلام نعتبره لا يملك بوستات لكي لا نوقف البوت
-        return False
-    feed = r.json().get("feed", [])
-    return len(feed) > 0
-
-
-# -----------------------------------
-# الرد على آخر منشور لكل مستخدم
-# -----------------------------------
-def reply_to_latest_post(session: BskySession, did: str, messages: List[str], handle_for_log: str = "") -> Tuple[bool, str]:
-    """
-    يرد على آخر منشور للمستخدم DID المُعطى.
-    - session: BskySession بعد login()
-    - messages: قائمة رسائل نصية؛ يُختار منها عشوائياً
-    يرجع (success, message)
-    """
-    try:
-        # 1) نجيب آخر بوست من public api
-        feed_url = f"{PUBLIC_API}/app.bsky.feed.getAuthorFeed"
-        fr = session.get(feed_url, params={"actor": did, "limit": 1})
-        if fr.status_code != 200:
-            return False, f"فشل جلب بوستات {handle_for_log or did}: {fr.text}"
-
-        feed_data = fr.json()
-        feed = feed_data.get("feed", [])
-        if not feed:
-            return False, f"{handle_for_log or did}: لا يملك منشورات."
-
-        latest_post = feed[0].get("post", {})
-        post_uri = latest_post.get("uri")
-        post_cid = latest_post.get("cid")
-        if not post_uri or not post_cid:
-            return False, f"{handle_for_log or did}: لا يوجد URI/CID للبوست."
-
-        # 2) نجهز رسالة
-        if not messages:
-            return False, "قائمة الرسائل فارغة."
-        message = random.choice(messages).strip()
-        if not message:
-            return False, "رسالة فارغة."
-
-        # 3) نرسل الرد باستخدام write api (يتطلب Authorization)
-        reply_url = f"{WRITE_API}/com.atproto.repo.createRecord"
-        payload = {
-            "repo": session.did,
-            "collection": "app.bsky.feed.post",
-            "record": {
-                "$type": "app.bsky.feed.post",
-                "text": message,
-                "reply": {
-                    "root": {"cid": post_cid, "uri": post_uri},
-                    "parent": {"cid": post_cid, "uri": post_uri},
-                },
-                "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            }
-        }
-        rr = session.post(reply_url, json=payload)
-        if rr.status_code == 200:
-            return True, f"تم الرد على {handle_for_log or did}"
-        else:
-            return False, f"فشل الرد على {handle_for_log or did}: {rr.status_code} {rr.text}"
-
-    except Exception as e:
-        return False, f"استثناء عند {handle_for_log or did}: {e}"
-
-
-# -----------------------------------
-# أداة مساعدة: تجهيز الجمهور حسب النوع مع فلترة من لا يملك بوستات
-# -----------------------------------
-def gather_audience(process_type: str, post_url: str, limit: int = 100, ignore_no_posts: bool = True) -> Tuple[List[Dict], str]:
-    """
-    يُعيد (audience_list, uri)
-    - process_type: "Likers" أو "Reposters"
-    - post_url: رابط البوست من bsky.app
-    - يقوم بفلترة المستخدمين الذين لا يملكون منشورات إذا ignore_no_posts=True
-    - يحافظ على الترتيب كما يعود من الـ API (من الأعلى للأسفل)
-    """
-    uri, _, _ = resolve_post_from_url(post_url)
-    if process_type.lower().startswith("liker"):
-        users = get_likers(uri, limit=limit)
+    if actor.startswith("did:"):
+        did = actor
     else:
-        users = get_reposters(uri, limit=limit)
+        did = client.com.atproto.identity.resolve_handle(
+            {"handle": actor}
+        ).did
 
-    if ignore_no_posts:
-        filtered = []
-        for u in users:
-            did = u.get("did")
-            if did and has_posts(did):
-                filtered.append(u)
-        users = filtered
+    at_uri = f"at://{did}/app.bsky.feed.post/{rkey}"
+    return did, rkey, at_uri
 
-    return users, uri
+# ---------- جلب الجمهور ----------
+def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
+    """
+    يرجع قائمة مرتبة من الحسابات (dict لكل مستخدم يحتوي did, handle).
+    mode: 'likers' | 'reposters'
+    """
+    audience: List[Dict] = []
+    cursor = None
+
+    if mode == "likers":
+        while True:
+            resp = client.app.bsky.feed.get_likes({"uri": post_at_uri, "cursor": cursor, "limit": 100})
+            for item in resp.likes or []:
+                actor = item.actor
+                audience.append({"did": actor.did, "handle": actor.handle})
+            cursor = getattr(resp, "cursor", None)
+            if not cursor:
+                break
+
+    elif mode == "reposters":
+        while True:
+            resp = client.app.bsky.feed.get_reposted_by({"uri": post_at_uri, "cursor": cursor, "limit": 100})
+            for actor in resp.actors or []:
+                audience.append({"did": actor.did, "handle": actor.handle})
+            cursor = getattr(resp, "cursor", None)
+            if not cursor:
+                break
+    else:
+        raise ValueError("mode يجب أن يكون likers أو reposters")
+
+    # إزالة التكرار مع الحفاظ على الترتيب
+    seen = set()
+    unique = []
+    for a in audience:
+        if a["did"] not in seen:
+            seen.add(a["did"])
+            unique.append(a)
+    return unique
+
+# ---------- هل للحساب منشورات ----------
+def has_posts(client: Client, did_or_handle: str) -> bool:
+    resp = client.app.bsky.feed.get_author_feed({"actor": did_or_handle, "limit": 1, "filter": "posts_no_replies"})
+    return len(resp.feed or []) > 0
+
+# ---------- آخر منشور للمستخدم ----------
+def latest_post_uri(client: Client, did_or_handle: str) -> Optional[str]:
+    resp = client.app.bsky.feed.get_author_feed({"actor": did_or_handle, "limit": 1, "filter": "posts_no_replies"})
+    if not resp.feed:
+        return None
+    post = resp.feed[0].post
+    return post.uri  # at://did/app.bsky.feed.post/rkey
+
+# ---------- إرسال رد ----------
+def reply_to_post(client: Client, target_post_uri: str, text: str) -> str:
+    posts = client.app.bsky.feed.get_posts({"uris": [target_post_uri]})
+    if not posts.posts:
+        raise RuntimeError("تعذر جلب معلومات البوست الهدف")
+
+    parent = posts.posts[0]
+    parent_ref = M.create_strong_ref(parent.uri, parent.cid)
+
+    # الجذر = إن كان للبوست root، استعمله، غير ذلك parent نفسه
+    root_ref = parent_ref
+    if getattr(parent, "record", None) and getattr(parent.record, "reply", None) and parent.record.reply.root:
+        root = parent.record.reply.root
+        root_ref = M.create_strong_ref(root.uri, root.cid)
+
+    record = M.AppBskyFeedPost.Record(
+        text=text,
+        reply=M.AppBskyFeedPost.ReplyRef(parent=parent_ref, root=root_ref),
+        created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        langs=["en"],
+    )
+
+    res = client.com.atproto.repo.create_record(
+        {"collection": "app.bsky.feed.post", "repo": client.me.did, "record": record}
+    )
+    return res.uri
+
+# ---------- حفظ/تحميل التقدم ----------
+def load_progress(path: str) -> Dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {
+            "state": "Idle",
+            "task": {},
+            "audience": [],
+            "index": 0,
+            "stats": {"ok": 0, "fail": 0, "total": 0},
+            "per_user": {},
+            "last_error": "-",
+        }
+
+def save_progress(path: str, data: Dict) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
