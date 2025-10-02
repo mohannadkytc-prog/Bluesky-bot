@@ -5,6 +5,7 @@ Bluesky Audience Replier + Flask UI
 - يرد على آخر منشور لكل مستخدم برسالة من قائمتك
 - تأخير بين كل مستخدم والآخر (من الواجهة)
 - حفظ واستئناف التقدم لكل (حساب/رابط)
+- يتجاهل الحسابات التي لا تملك منشورات (skipped)
 """
 
 import os
@@ -21,11 +22,28 @@ from flask import Flask, jsonify, render_template, request
 from atproto import Client
 from atproto.exceptions import AtProtocolError
 
-# محليّاً
+# إعدادات ومسارات
 from config import Config, DATA_DIR, PROGRESS_PATH, DEFAULT_MIN_DELAY, DEFAULT_MAX_DELAY
-from utils import resolve_post_from_url, save_progress, load_progress, validate_message_template
 
-# إعداد اللوج
+# --- استيراد utils مع بدائل آمنة ---
+# نحتاج دائمًا هذه:
+from utils import resolve_post_from_url, save_progress, load_progress
+
+# وقد لا تتوفر validate_message_template في utils لديك، فنعرّف بديلًا عند الحاجة:
+try:
+    from utils import validate_message_template as _validate_message_template
+    def _is_valid_message(s: str) -> bool:
+        return _validate_message_template(s)
+except Exception:
+    def _is_valid_message(s: str) -> bool:
+        # بديل بسيط وآمن: نص، طول ≤ 280 وعدم وجود أنماط خطيرة
+        if not isinstance(s, str): return False
+        if not (1 <= len(s) <= 280): return False
+        bad = ("<script", "javascript:", "data:", "vbscript:", "onerror", "onclick")
+        ss = s.lower()
+        return not any(b in ss for b in bad)
+
+# لوج
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bluesky-bot")
 
@@ -64,8 +82,8 @@ class BlueSkyBot:
     def _get_post_audience(self, post_uri: str, which: str) -> List[Dict[str, Any]]:
         """
         which: 'likers' | 'reposters'
-        تُعيد قائمة dicts مع مفاتيح: handle, did, createdAt
-        مرتبة تصاعدياً بحيث نعالج من الأقدم إلى الأحدث (ثبات/قابلية للاستئناف).
+        تُعيد قائمة dicts مع مفاتيح: handle, did, indexedAt
+        مرتبة تصاعدياً (أقدم → أحدث) لضمان الاستئناف السلس.
         """
         audience: List[Dict[str, Any]] = []
 
@@ -73,7 +91,7 @@ class BlueSkyBot:
             cursor = None
             while True:
                 resp = self.client.app.bsky.feed.get_likes({"uri": post_uri, "cursor": cursor, "limit": 100})
-                for it in resp.likes or []:
+                for it in (resp.likes or []):
                     actor = it.actor
                     audience.append({
                         "handle": getattr(actor, "handle", None),
@@ -88,7 +106,7 @@ class BlueSkyBot:
             cursor = None
             while True:
                 resp = self.client.app.bsky.feed.get_reposted_by({"uri": post_uri, "cursor": cursor, "limit": 100})
-                for actor in resp.reposted_by or []:
+                for actor in (resp.reposted_by or []):
                     audience.append({
                         "handle": getattr(actor, "handle", None),
                         "did": getattr(actor, "did", None),
@@ -100,7 +118,7 @@ class BlueSkyBot:
         else:
             raise ValueError("processing_type must be 'likers' or 'reposters'.")
 
-        # ثبات: الترتيب تصاعدياً حسب وقت الفهرسة/الظهور، مع كسر التعادل بالـ handle
+        # ترتيب ثابت
         audience.sort(key=lambda x: (x.get("indexedAt", ""), x.get("handle", "")))
         return audience
 
@@ -115,7 +133,7 @@ class BlueSkyBot:
             if not posts:
                 return None
 
-            # نبحث عن أول بوست ليس ردّاً
+            # أول بوست ليس ردّاً
             for item in posts:
                 try:
                     post = item.post
@@ -125,7 +143,6 @@ class BlueSkyBot:
                 except Exception:
                     continue
 
-            # إن لم نجد، نتابع الصفحة التالية
             cursor = getattr(feed, "cursor", None)
             if not cursor:
                 break
@@ -171,8 +188,8 @@ class BlueSkyBot:
         p = load_progress(PROGRESS_PATH, state.post_url) or {}
         start_index = int(p.get("next_index", 0))
 
-        # جلب الجمهور بالترتيب
-        if start_index == 0 or not p.get("audience_cache", []):
+        # جلب الجمهور بالترتيب (أو من الكاش إن وُجد)
+        if start_index == 0 or not p.get("audience_cache"):
             audience = self._get_post_audience(post_uri, state.processing_type)
             audience_cache = [{"handle": a["handle"], "did": a["did"]} for a in audience]
         else:
@@ -181,8 +198,9 @@ class BlueSkyBot:
         total = len(audience_cache)
         completed = int(p.get("completed", 0))
         failed = int(p.get("failed", 0))
+        skipped = int(p.get("skipped", 0))
 
-        log.info(f"👥 Audience total = {total} (processing_type={state.processing_type}) - resume from {start_index}")
+        log.info(f"👥 Audience = {total} ({state.processing_type}) - resume at index {start_index}")
 
         # حفظ لقطة
         save_progress(PROGRESS_PATH, state.post_url, {
@@ -192,11 +210,12 @@ class BlueSkyBot:
             "next_index": start_index,
             "completed": completed,
             "failed": failed,
+            "skipped": skipped,
             "last_updated": datetime.utcnow().isoformat() + "Z",
             "handle": self.cfg.bluesky_handle,
         })
 
-        # الحلقة الرئيسية
+        # الحلقة
         for idx in range(start_index, total):
             if self._stop_flag:
                 log.warning("🛑 تم إيقاف التشغيل من المستخدم.")
@@ -209,20 +228,19 @@ class BlueSkyBot:
                 continue
 
             # جهّز الرسالة
-            msg_choices = [m for m in state.messages if validate_message_template(m)]
+            msg_choices = [m for m in state.messages if _is_valid_message(m)]
             message = random.choice(msg_choices) if msg_choices else "🙏"
 
-            ok = False
             try:
                 target = self._get_users_latest_post(actor)
                 if not target:
-                    log.info(f"ℹ️ لا توجد منشورات للمستخدم: {actor}")
-                    failed += 1
+                    # الفلتر المطلوب: تجاهل الحساب بدون منشورات
+                    log.info(f"⏭️ تجاوز @{actor}: لا يملك منشورات.")
+                    skipped += 1
                 else:
                     uri, cid = target
-                    ok = self._reply_to(uri, cid, message)
-                    if ok:
-                        log.info(f"💬 Reply OK → @{actor}: {message[:60]}")
+                    if self._reply_to(uri, cid, message):
+                        log.info(f"💬 Reply OK → @{actor}")
                         completed += 1
                     else:
                         failed += 1
@@ -233,7 +251,7 @@ class BlueSkyBot:
                 log.error(f"⚠️ Unexpected error @{actor}: {e}")
                 failed += 1
 
-            # تحديث تقدّم بعد كل محاولة
+            # تحديث التقدم بعد كل محاولة
             save_progress(PROGRESS_PATH, state.post_url, {
                 "processing_type": state.processing_type,
                 "audience_total": total,
@@ -241,13 +259,14 @@ class BlueSkyBot:
                 "next_index": idx + 1,
                 "completed": completed,
                 "failed": failed,
+                "skipped": skipped,
                 "last_updated": datetime.utcnow().isoformat() + "Z",
                 "handle": self.cfg.bluesky_handle,
             })
 
-            # تأخير بين المستخدمين
+            # تأخير
             delay = random.randint(state.min_delay, state.max_delay)
-            log.info(f"⏳ الانتظار {delay} ثانية قبل الانتقال للمستخدم التالي …")
+            log.info(f"⏳ انتظار {delay} ثانية …")
             for _ in range(delay):
                 if self._stop_flag:
                     break
@@ -255,11 +274,10 @@ class BlueSkyBot:
             if self._stop_flag:
                 break
 
-            # تحديث واجهة عبر كولباك (اختياري)
             if self.progress_cb:
-                self.progress_cb(completed, failed)
+                self.progress_cb(completed, failed, skipped)
 
-        return {"completed": completed, "failed": failed}
+        return {"completed": completed, "failed": failed, "skipped": skipped}
 
 
 # ================== خادم الويب (Flask) ==================
@@ -273,6 +291,7 @@ runtime_stats = {
 bot_progress = {
     "completed_runs": 0,
     "failed_runs": 0,
+    "skipped_runs": 0,
     "total_bot_runs": 0,
     "success_rate": 0.0,
     "audience_total": 0,
@@ -283,17 +302,17 @@ bot_instance: Optional[BlueSkyBot] = None
 session_start: Optional[float] = None
 
 
-def update_progress(completed: int, failed: int) -> None:
+def update_progress(completed: int, failed: int, skipped: int) -> None:
     bot_progress["completed_runs"] = completed
     bot_progress["failed_runs"] = failed
-    total = completed + failed
-    bot_progress["total_bot_runs"] = total
-    bot_progress["success_rate"] = (completed / total) if total else 0.0
+    bot_progress["skipped_runs"] = skipped
+    total_attempted = completed + failed  # فقط ما حاول يرد عليه
+    bot_progress["total_bot_runs"] = total_attempted
+    bot_progress["success_rate"] = (completed / total_attempted) if total_attempted else 0.0
 
 
 @app.route("/")
 def index():
-    # ملف القالب: templates/persistent.html
     return render_template("persistent.html",
                            default_min=DEFAULT_MIN_DELAY,
                            default_max=DEFAULT_MAX_DELAY)
@@ -313,7 +332,7 @@ def queue_task():
 
     messages: List[str] = data.get("messages") or data.get("message_templates") or []
     messages = [m.strip() for m in messages if m and m.strip()]
-    processing_type = (data.get("processing_type") or "likers").strip()  # 'likers' أو 'reposters'
+    processing_type = (data.get("processing_type") or "likers").strip()  # 'likers' | 'reposters'
 
     # بيانات الدخول
     handle = data.get("bluesky_handle") or os.getenv("BLUESKY_HANDLE") or os.getenv("BSKY_HANDLE")
@@ -326,32 +345,28 @@ def queue_task():
     except Exception:
         min_delay, max_delay = DEFAULT_MIN_DELAY, DEFAULT_MAX_DELAY
 
-    # تحقق
     if not handle or not password or not post_url:
         return jsonify({"error": "❌ البيانات ناقصة (handle/password/post_url)"}), 400
     if not messages:
         messages = ["🙏 Thank you!"]
 
-    # إعدادات
     cfg = Config(bluesky_handle=handle, bluesky_password=password, min_delay=min_delay, max_delay=max_delay)
     bot_instance = BlueSkyBot(cfg)
 
-    # كولباك للتقدم
-    def on_progress(comp: int, fail: int):
-        update_progress(comp, fail)
+    def on_progress(comp: int, fail: int, skip: int):
+        update_progress(comp, fail, skip)
 
     bot_instance.progress_cb = on_progress
     bot_instance.reset_stop()
 
     run_state = RunState(
         post_url=post_url,
-        processing_type=processing_type,  # "likers" أو "reposters"
+        processing_type=processing_type,
         messages=messages,
         min_delay=cfg.min_delay,
         max_delay=cfg.max_delay,
     )
 
-    # العامل بالخلفية
     def runner():
         global session_start
         session_start = time.time()
@@ -362,17 +377,16 @@ def queue_task():
             res = bot_instance.run_replies(run_state)
         except Exception as e:
             log.error(f"❌ فشل المهمة: {e}")
-            res = {"completed": 0, "failed": 1}
+            res = {"completed": 0, "failed": 1, "skipped": 0}
 
         runtime_stats["status"] = "Idle"
         runtime_stats["current_task"] = None
         uptime = int(time.time() - session_start) if session_start else 0
         runtime_stats["session_uptime"] = f"{uptime}s"
 
-        update_progress(res.get("completed", 0), res.get("failed", 0))
+        update_progress(res.get("completed", 0), res.get("failed", 0), res.get("skipped", 0))
 
-        # تحديث إجمالي الجمهور من ملف التقدم
-        p = load_progress(PROGRESS_PATH, post_url) or {}
+        p = load_progress(PROGRESS_PATH, run_state.post_url) or {}
         bot_progress["audience_total"] = int(p.get("audience_total", 0))
 
     bot_thread = threading.Thread(target=runner, daemon=True)
@@ -390,20 +404,11 @@ def stop_task():
     return jsonify({"status": "🛑 تم الإيقاف"})
 
 
-@app.post("/resume_task")
-def resume_task():
-    runtime_stats["status"] = "Running"
-    return jsonify({"status": "▶️ تم الاستئناف"})
-
-
 @app.get("/detailed_progress")
 def detailed_progress():
-    # snapshot من progress.json لو موجود
     try:
-        # لما يشتغل على /tmp أو /data، المسار موجود في PROGRESS_PATH
-        from pathlib import Path
-        if Path(PROGRESS_PATH).exists():
-            import json
+        import json, pathlib
+        if pathlib.Path(PROGRESS_PATH).exists():
             with open(PROGRESS_PATH, "r") as f:
                 allp = json.load(f)
         else:
@@ -418,7 +423,7 @@ def detailed_progress():
     })
 
 
-# Aliases اختيارية
+# Aliases
 @app.post("/queue")
 def queue_alias():
     return queue_task()
