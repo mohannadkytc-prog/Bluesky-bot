@@ -1,11 +1,10 @@
 # utils.py
 import re
 import time
-import random
 import json
 from typing import Dict, List, Tuple, Optional
 
-from atproto import Client, models as M, client_utils as CU
+from atproto import Client, models as M
 
 # ---------- جلسة العميل ----------
 def make_client(handle: str, password: str) -> Client:
@@ -55,7 +54,9 @@ def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
 
     if mode == "likers":
         while True:
-            resp = client.app.bsky.feed.get_likes({"uri": post_at_uri, "cursor": cursor, "limit": 100})
+            resp = client.app.bsky.feed.get_likes(
+                {"uri": post_at_uri, "cursor": cursor, "limit": 100}
+            )
             for item in resp.likes or []:
                 actor = item.actor
                 audience.append({"did": actor.did, "handle": actor.handle})
@@ -65,8 +66,10 @@ def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
 
     elif mode == "reposters":
         while True:
-            resp = client.app.bsky.feed.get_reposted_by({"uri": post_at_uri, "cursor": cursor, "limit": 100})
-            # ملاحظة: الحقل الصحيح هو reposted_by
+            resp = client.app.bsky.feed.get_reposted_by(
+                {"uri": post_at_uri, "cursor": cursor, "limit": 100}
+            )
+            # الحقل الصحيح لنتيجة API هو reposted_by
             for actor in resp.reposted_by or []:
                 audience.append({"did": actor.did, "handle": actor.handle})
             cursor = getattr(resp, "cursor", None)
@@ -105,7 +108,7 @@ def latest_post_uri(client: Client, did_or_handle: str) -> Optional[str]:
 def reply_to_post(client: Client, target_post_uri: str, text: str) -> str:
     """
     يرد على بوست محدد بـ target_post_uri.
-    يصلح خطأ create_strong_ref عبر تمرير dict يحوي uri و cid.
+    يعتمد على M.StrongRef (المعتمد في الإصدارات الحديثة من atproto).
     """
     posts = client.app.bsky.feed.get_posts({"uris": [target_post_uri]})
     if not posts.posts:
@@ -113,18 +116,17 @@ def reply_to_post(client: Client, target_post_uri: str, text: str) -> str:
 
     parent = posts.posts[0]
 
-    # ✅ الإصلاح: create_strong_ref يتوقع dict بالشكل {"uri": ..., "cid": ...}
-    parent_ref = CU.create_strong_ref({"uri": parent.uri, "cid": parent.cid})
+    # StrongRef بدلاً من create_strong_ref
+    parent_ref = M.StrongRef(uri=parent.uri, cid=parent.cid)
 
     # الجذر = إن كان للبوست root، استعمله، غير ذلك parent نفسه
     root_ref = parent_ref
     try:
-        root = getattr(getattr(parent, "record", None), "reply", None)
-        root = getattr(root, "root", None)
+        reply_block = getattr(getattr(parent, "record", None), "reply", None)
+        root = getattr(reply_block, "root", None)
         if root and getattr(root, "uri", None) and getattr(root, "cid", None):
-            root_ref = CU.create_strong_ref({"uri": root.uri, "cid": root.cid})
+            root_ref = M.StrongRef(uri=root.uri, cid=root.cid)
     except Exception:
-        # لو أي خطأ، نستخدم parent كـ root
         root_ref = parent_ref
 
     record = M.AppBskyFeedPost.Record(
