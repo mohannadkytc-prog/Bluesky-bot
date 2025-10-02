@@ -1,0 +1,209 @@
+from flask import Flask, request, jsonify, render_template_string
+from bluesky_bot import start_task, stop_task, resume_task, read_status
+from utils import validate_message_template
+
+app = Flask(__name__)
+
+HTML = """
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Bluesky Bot Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<style>
+ body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Tahoma,Arial; background:#f5f7fb; color:#222; padding:20px}
+ .card{background:#fff;border-radius:16px;box-shadow:0 6px 18px rgba(0,0,0,.06); padding:20px; margin:16px auto; max-width:960px}
+ h1{margin:0 0 8px}
+ label{display:block;margin:12px 0 6px;font-weight:600}
+ input[type=text],input[type=password],textarea,select{
+   width:100%; padding:12px; border:1px solid #ddd; border-radius:10px; background:#fafafa}
+ textarea{min-height:140px}
+ .grid{display:grid; gap:16px}
+ @media(min-width:768px){ .grid-2{grid-template-columns:1fr 1fr} .grid-3{grid-template-columns:1fr 1fr 1fr}}
+ .btn{display:inline-flex; align-items:center; gap:8px; padding:12px 16px;
+   border:0; border-radius:12px; cursor:pointer; font-weight:700}
+ .btn-primary{background:#16a34a;color:#fff} .btn-danger{background:#ef4444;color:#fff}
+ .btn-info{background:#0ea5e9;color:#fff} .btn-warning{background:#f59e0b;color:#111}
+ .stats{display:grid; gap:12px; grid-template-columns:repeat(3,1fr)}
+ .stat{background:#fafafa; border:1px dashed #e5e7eb; padding:12px; border-radius:12px; text-align:center}
+ .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas}
+ small{color:#777}
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>لوحة تحكم بوت Bluesky</h1>
+  <small>سيتم حفظ التقدم تلقائيًا واستئنافه لكل (حساب/وضع/رابط).</small>
+  <form id="f" onsubmit="return false;">
+    <div class="grid grid-2">
+      <div>
+        <label>حساب Bluesky (handle)</label>
+        <input type="text" name="handle" placeholder="username.bsky.social" required>
+      </div>
+      <div>
+        <label>كلمة المرور</label>
+        <input type="password" name="password" required>
+      </div>
+      <div>
+        <label>رابط المنشور المراد جلب جمهوره</label>
+        <input type="text" name="post_url" placeholder="https://bsky.app/profile/.../post/..." required>
+      </div>
+      <div>
+        <label>نوع المعالجة</label>
+        <select name="mode">
+          <option value="likers">المعجبون (Likes)</option>
+          <option value="reposters">معيدو النشر (Reposts)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="grid grid-2">
+      <div>
+        <label>الحد الأدنى للتأخير (ثوان)</label>
+        <input type="text" name="min_delay" value="200">
+      </div>
+      <div>
+        <label>الحد الأقصى للتأخير (ثوان)</label>
+        <input type="text" name="max_delay" value="250">
+      </div>
+    </div>
+
+    <label>الرسائل (سطر لكل رسالة — سيختار البوت سطرًا عشوائيًا لكل رد)</label>
+    <textarea name="messages" placeholder="سطر لكل رسالة..."></textarea>
+
+    <div style="margin-top:12px">
+      <button class="btn btn-primary" onclick="start()">بدء المهمة ✅</button>
+      <button class="btn btn-danger" onclick="stop()">إيقاف ⛔</button>
+      <button class="btn btn-info" onclick="resume()">استئناف ▶️</button>
+      <button class="btn btn-warning" onclick="refresh()">تحديث الحالة 🔄</button>
+      <small class="mono" id="datadir"></small>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>حالة التشغيل</h2>
+  <div class="stats">
+    <div class="stat">
+      <div>الحالة الحالية</div>
+      <div class="mono" id="st"></div>
+    </div>
+    <div class="stat">
+      <div>إجمالي الجمهور</div>
+      <div class="mono" id="total">0</div>
+    </div>
+    <div class="stat">
+      <div>المنجز</div>
+      <div class="mono" id="ok">0</div>
+    </div>
+  </div>
+
+  <div class="stats" style="margin-top:12px">
+    <div class="stat">
+      <div>فشل</div>
+      <div class="mono" id="fail">0</div>
+    </div>
+    <div class="stat">
+      <div>متبقّي</div>
+      <div class="mono" id="rem">0</div>
+    </div>
+    <div class="stat">
+      <div>المُعالج الحالي (DID)</div>
+      <div class="mono" id="curr">—</div>
+    </div>
+  </div>
+
+  <div style="margin-top:16px">
+    <label>آخر خطأ</label>
+    <div class="mono" id="err" style="background:#fff; border:1px solid #eee; padding:10px; border-radius:8px; min-height:40px"></div>
+  </div>
+</div>
+
+<script>
+async function start(){
+  const fd = new FormData(document.getElementById('f'));
+  const body = Object.fromEntries(fd.entries());
+  const r = await fetch('/start', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  const j = await r.json();
+  alert(j.message || 'OK');
+  refresh();
+}
+async function stop(){
+  const r = await fetch('/stop', {method:'POST'});
+  const j = await r.json();
+  alert(j.message || 'OK');
+  refresh();
+}
+async function resume(){
+  const fd = new FormData(document.getElementById('f'));
+  const body = Object.fromEntries(fd.entries());
+  const r = await fetch('/resume', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  const j = await r.json();
+  alert(j.message || 'OK');
+  refresh();
+}
+async function refresh(){
+  const r = await fetch('/status');
+  const s = await r.json();
+  document.getElementById('st').textContent = s.status + (s.running?' (Running)':'');
+  document.getElementById('total').textContent = s.stats?.total ?? 0;
+  document.getElementById('ok').textContent = s.stats?.ok ?? 0;
+  document.getElementById('fail').textContent = s.stats?.fail ?? 0;
+  document.getElementById('rem').textContent = s.remaining ?? 0;
+  document.getElementById('curr').textContent = s.current_did || '—';
+  document.getElementById('err').textContent = s.last_error || s.last_error_saved || '';
+  document.getElementById('datadir').textContent = 'التخزين: ' + (s.data_dir || '');
+}
+refresh();
+</script>
+</body>
+</html>
+"""
+
+@app.get("/")
+def index():
+    return render_template_string(HTML)
+
+@app.post("/start")
+def api_start():
+    data = request.get_json(force=True)
+    ok, msg = start_task(
+        handle=data.get("handle","").strip(),
+        password=data.get("password","").strip(),
+        post_url=data.get("post_url","").strip(),
+        mode=(data.get("mode") or "likers").strip(),
+        min_delay=int(data.get("min_delay") or 200),
+        max_delay=int(data.get("max_delay") or 250),
+        messages_text=data.get("messages",""),
+    )
+    return jsonify({"ok": ok, "message": msg})
+
+@app.post("/stop")
+def api_stop():
+    ok, msg = stop_task()
+    return jsonify({"ok": ok, "message": msg})
+
+@app.post("/resume")
+def api_resume():
+    data = request.get_json(force=True)
+    ok, msg = resume_task(
+        handle=data.get("handle","").strip(),
+        password=data.get("password","").strip(),
+        post_url=data.get("post_url","").strip(),
+        mode=(data.get("mode") or "likers").strip(),
+        min_delay=int(data.get("min_delay") or 200),
+        max_delay=int(data.get("max_delay") or 250),
+        messages_text=data.get("messages",""),
+    )
+    return jsonify({"ok": ok, "message": msg})
+
+@app.get("/status")
+def api_status():
+    return jsonify(read_status())
+
+
+# للـ Render/Gunicorn
+app = app
