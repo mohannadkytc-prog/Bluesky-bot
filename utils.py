@@ -6,13 +6,15 @@ from typing import Dict, List, Tuple, Optional
 
 from atproto import Client, models as M
 
+
 # ---------- جلسة العميل ----------
 def make_client(handle: str, password: str) -> Client:
     """يسجّل الدخول ويعيد Client جاهز."""
     c = Client()
-    # ملاحظة: استخدمي App Password (وليس الرقم السري العادي) لحساب Bluesky
+    # مهم: استخدمي App Password (وليس كلمة السر العادية)
     c.login(handle, password)
     return c
+
 
 # ---------- تحليل رابط البوست ----------
 def _parse_bsky_post_url(url: str) -> Tuple[str, str]:
@@ -28,6 +30,7 @@ def _parse_bsky_post_url(url: str) -> Tuple[str, str]:
     rkey = m.group(2)
     return actor, rkey
 
+
 def resolve_post_from_url(client: Client, url: str) -> Tuple[str, str, str]:
     """
     من رابط التطبيق يرجع (did, rkey, at_uri)
@@ -42,6 +45,7 @@ def resolve_post_from_url(client: Client, url: str) -> Tuple[str, str, str]:
 
     at_uri = f"at://{did}/app.bsky.feed.post/{rkey}"
     return did, rkey, at_uri
+
 
 # ---------- جلب الجمهور ----------
 def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
@@ -69,7 +73,7 @@ def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
             resp = client.app.bsky.feed.get_reposted_by(
                 {"uri": post_at_uri, "cursor": cursor, "limit": 100}
             )
-            # الحقل الصحيح لنتيجة API هو reposted_by
+            # الحقل الصحيح في الاستجابة:
             for actor in resp.reposted_by or []:
                 audience.append({"did": actor.did, "handle": actor.handle})
             cursor = getattr(resp, "cursor", None)
@@ -87,12 +91,14 @@ def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
             unique.append(a)
     return unique
 
+
 # ---------- هل للحساب منشورات ----------
 def has_posts(client: Client, did_or_handle: str) -> bool:
     resp = client.app.bsky.feed.get_author_feed(
         {"actor": did_or_handle, "limit": 1, "filter": "posts_no_replies"}
     )
     return len(resp.feed or []) > 0
+
 
 # ---------- آخر منشور للمستخدم ----------
 def latest_post_uri(client: Client, did_or_handle: str) -> Optional[str]:
@@ -104,11 +110,12 @@ def latest_post_uri(client: Client, did_or_handle: str) -> Optional[str]:
     post = resp.feed[0].post
     return post.uri  # at://did/app.bsky.feed.post/rkey
 
+
 # ---------- إرسال رد ----------
 def reply_to_post(client: Client, target_post_uri: str, text: str) -> str:
     """
     يرد على بوست محدد بـ target_post_uri.
-    يعتمد على M.StrongRef (المعتمد في الإصدارات الحديثة من atproto).
+    نبني مراجع root/parent كـ dict يحوي uri و cid (بدون StrongRef).
     """
     posts = client.app.bsky.feed.get_posts({"uris": [target_post_uri]})
     if not posts.posts:
@@ -116,16 +123,16 @@ def reply_to_post(client: Client, target_post_uri: str, text: str) -> str:
 
     parent = posts.posts[0]
 
-    # StrongRef بدلاً من create_strong_ref
-    parent_ref = M.StrongRef(uri=parent.uri, cid=parent.cid)
+    # المرجع الأساسي (parent) كـ dict
+    parent_ref = {"uri": parent.uri, "cid": parent.cid}
 
-    # الجذر = إن كان للبوست root، استعمله، غير ذلك parent نفسه
+    # المرجع الجذري (root) – إن لم يوجد نستخدم parent
     root_ref = parent_ref
     try:
-        reply_block = getattr(getattr(parent, "record", None), "reply", None)
-        root = getattr(reply_block, "root", None)
+        root = getattr(getattr(parent, "record", None), "reply", None)
+        root = getattr(root, "root", None)
         if root and getattr(root, "uri", None) and getattr(root, "cid", None):
-            root_ref = M.StrongRef(uri=root.uri, cid=root.cid)
+            root_ref = {"uri": root.uri, "cid": root.cid}
     except Exception:
         root_ref = parent_ref
 
@@ -140,6 +147,7 @@ def reply_to_post(client: Client, target_post_uri: str, text: str) -> str:
         {"collection": "app.bsky.feed.post", "repo": client.me.did, "record": record}
     )
     return res.uri
+
 
 # ---------- حفظ/تحميل التقدم ----------
 def load_progress(path: str) -> Dict:
@@ -156,6 +164,7 @@ def load_progress(path: str) -> Dict:
             "per_user": {},
             "last_error": "-",
         }
+
 
 def save_progress(path: str, data: Dict) -> None:
     with open(path, "w", encoding="utf-8") as f:
