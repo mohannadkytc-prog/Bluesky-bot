@@ -181,14 +181,13 @@ def _run_worker(cfg: Config, post_url: str, mode: str, messages: List[str]):
 
         # الجمهور (حسب النوع) بالترتيب
         audience = fetch_audience(client, mode, post_uri)
-        # تصفية من لا يملك منشورات
+        # تصفية من لا يملك منشورات أصلية
         filtered = []
         for a in audience:
             try:
                 if has_posts(client, a["did"]):
                     filtered.append(a)
             except Exception:
-                # تجاهل بصمت
                 pass
 
         with _lock:
@@ -199,7 +198,6 @@ def _run_worker(cfg: Config, post_url: str, mode: str, messages: List[str]):
 
         # التنفيذ
         while True:
-            # التوقف؟
             if _stop_flag.is_set():
                 with _lock:
                     progress["state"] = "Idle"
@@ -214,11 +212,11 @@ def _run_worker(cfg: Config, post_url: str, mode: str, messages: List[str]):
                     return
                 user = progress["audience"][i]
 
-            # إرسال رد على آخر منشور للمستخدم
+            # إرسال رد على آخر منشور/رد أصلي للمستخدم
             try:
                 target_uri = latest_post_uri(client, user["did"])
                 if not target_uri:
-                    raise RuntimeError("skipped_no_posts")
+                    raise RuntimeError("skipped_no_own_posts")
 
                 msg = random.choice(messages).strip()
                 if not msg:
@@ -323,8 +321,6 @@ def resume():
     if not (handle and post_url and mode):
         return jsonify(error="لا توجد مهمة محفوظة لاستئنافها"), 400
 
-    # الرسائل: نعيد استخدام الرسائل السابقة إن وُجدت ضمن per_user؟ الأفضل نطلبها من جديد
-    # لتبسيط الاستئناف سنستخدم رسائل افتراضية إن لم تُرسل هذه المرة
     messages = request.get_json(silent=True) or {}
     msgs_raw = (messages.get("messages") or "").strip()
     if not msgs_raw:
@@ -332,8 +328,6 @@ def resume():
     msgs = [m.strip() for m in msgs_raw.splitlines() if m.strip()]
 
     cfg = Config(handle, os.getenv("BSKY_PASSWORD") or "", min_delay, max_delay)
-    # عند الاستئناف نحتاج كلمة مرور؛ لتجنب ظهورها بالواجهة نخزنها من البداية فقط بالرام.
-    # فلو غيرتي السيرفس قد يلزم إدخالها مجدداً عبر /start.
     if not cfg.bluesky_password:
         return jsonify(error="لا يمكن الاستئناف بدون كلمة المرور. ابدئي من جديد عبر بدء المهمة."), 400
 
