@@ -1,318 +1,333 @@
-import random
-import threading
-import time
+# -*- coding: utf-8 -*-
+import os, time, threading, random, logging
 from typing import Dict, Any, List, Optional
-
 from flask import Flask, render_template, request, jsonify
-
 from atproto import Client, models
 
-from config import Config, PROGRESS_PATH
+from config import PROGRESS_PATH, Config  # يستخدم DATA_DIR/PROGRESS_PATH من config.py
 from utils import (
     extract_post_info,
-    load_progress,
+    resolve_post_from_url,
     save_progress,
-    save_progress_for_key,
+    load_progress,
     validate_message_template,
 )
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("bluesky-bot")
+
 app = Flask(__name__)
 
-# حالة الخدمة في الذاكرة
-state: Dict[str, Any] = {
-    "running": False,
-    "current_task": None,       # dict يُخزن آخر مدخلات الشاشة
-    "stop_event": threading.Event(),
-    "lock": threading.Lock(),
-}
+# =========================
+# إدارة التشغيل والحالة
+# =========================
+RUNNERS: Dict[str, Dict[str, Any]] = {}  # per-key: {"thread": Thread, "stop": Event}
 
-# --------- Helpers: Bluesky ----------
-def login_client(handle: str, password: str) -> Client:
+def progress_key(handle: str, post_url: str, mode: str) -> str:
+    return f"{handle}|{post_url}|{mode}"
+
+def _load(handle: str, post_url: str, mode: str) -> Dict[str, Any]:
+    return load_progress(PROGRESS_PATH, progress_key(handle, post_url, mode))
+
+def _save(handle: str, post_url: str, mode: str, data: Dict[str, Any]):
+    save_progress(PROGRESS_PATH, progress_key(handle, post_url, mode), data)
+
+# =========================
+# وظائف البلوسكاي
+# =========================
+
+def get_client(cfg: Config) -> Client:
     client = Client()
-    client.login(handle, password)
+    client.login(cfg.bluesky_handle, cfg.bluesky_password)
     return client
 
-def resolve_uri_from_post_url(client: Client, post_url: str) -> Optional[str]:
-    """تحويل رابط bsky إلى at://did/app.bsky.feed.post/<rkey>"""
-    info = extract_post_info(post_url)
-    if not info:
-        return None
-    profile = client.app.bsky.actor.get_profile({"actor": info["username"]})
-    did = profile.did
-    return f"at://{did}/app.bsky.feed.post/{info['post_id']}"
-
-def get_likers_in_order(client: Client, post_uri: str) -> List[str]:
-    """إرجاع DIDs للمعجبين بالترتيب المعروض (الأحدث أولاً كما تعيد API)."""
+def fetch_audience(client: Client, post_uri: str, mode: str) -> List[str]:
+    """جلب قائمة المعجبين أو معيدي النشر (DIDs) بالترتيب من الأقدم للأحدث."""
     dids: List[str] = []
     cursor = None
     while True:
-        resp = client.app.bsky.feed.get_likes({"uri": post_uri, "cursor": cursor, "limit": 100})
-        for it in resp.likes:
-            if it.actor and it.actor.did:
-                dids.append(it.actor.did)
-        cursor = resp.cursor
-        if not cursor:
-            break
-    return dids
+        if mode == "likes":
+            resp = client.app.bsky.feed.get_likes({"uri": post_uri, "cursor": cursor, "limit": 100})
+            items = resp.likes or []
+            for i in items:
+                if i.actor and i.actor.did:
+                    dids.append(i.actor.did)
+            cursor = getattr(resp, "cursor", None)
+        else:  # reposts
+            resp = client.app.bsky.feed.get_reposted_by({"uri": post_uri, "cursor": cursor, "limit": 100})
+            items = resp.repostedBy or []
+            for a in items:
+                if a.did:
+                    dids.append(a.did)
+            cursor = getattr(resp, "cursor", None)
 
-def get_reposters_in_order(client: Client, post_uri: str) -> List[str]:
-    """إرجاع DIDs لمعيدي النشر بالترتيب المعروض (الأحدث أولاً)."""
-    dids: List[str] = []
-    cursor = None
-    while True:
-        resp = client.app.bsky.feed.get_reposted_by({"uri": post_uri, "cursor": cursor, "limit": 100})
-        for it in resp.repostedBy:
-            if it.did:
-                dids.append(it.did)
-        cursor = getattr(resp, "cursor", None)
         if not cursor:
             break
+
+    # الأقدم -> الأحدث: نريد البدء من الأعلى، لذا لا نعكس
     return dids
 
 def latest_post_uri_for_user(client: Client, did_or_handle: str) -> Optional[str]:
-    """إحضار آخر بوست لحساب (إن لم يوجد يرجع None)."""
-    feed = client.app.bsky.feed.get_author_feed({"actor": did_or_handle, "limit": 1})
-    if not feed.feed:
-        return None
-    post = feed.feed[0].post
-    return post.uri if post and post.uri else None
+    """إرجاع آخر بوست كتبه هذا المستخدم نفسه (ليس ريبوست/محتوى غيره)."""
+    cursor = None
+    while True:
+        feed = client.app.bsky.feed.get_author_feed({"actor": did_or_handle, "limit": 50, "cursor": cursor})
+        if not feed.feed:
+            return None
+        for item in feed.feed:
+            post = item.post
+            if post and post.author and post.author.did == did_or_handle and post.uri:
+                return post.uri
+        cursor = getattr(feed, "cursor", None)
+        if not cursor:
+            break
+    return None
 
 def send_reply(client: Client, parent_uri: str, text: str):
-    """إرسال رد على بوست معيّن."""
+    """إرسال رد على بوست معيّن (بسيط ومُتوافق)."""
     post = client.app.bsky.feed.get_posts({"uris": [parent_uri]}).posts[0]
     reply_ref = models.app.bsky.feed.post.ReplyRef(
         parent=models.com.atproto.repo.strong_ref.Main(uri=post.uri, cid=post.cid),
         root=models.com.atproto.repo.strong_ref.Main(uri=post.uri, cid=post.cid),
     )
     client.app.bsky.feed.post.create(
-        models.ComAtprotoRepoCreateRecord.Data(
-            repo=client.me.did,
-            collection="app.bsky.feed.post",
-            record=models.AppBskyFeedPost.Main(
-                text=text,
-                createdAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                reply=reply_ref,
-            ),
-        )
+        repo=client.me.did,
+        record=models.AppBskyFeedPost.Main(
+            text=text,
+            createdAt=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            reply=reply_ref,
+        ),
     )
 
-# --------- Progress helpers for this task ----------
-def progress_key(handle: str, post_url: str, mode: str) -> str:
-    return f"{handle}|{post_url}|{mode}"
+# =========================
+# حلقة التنفيذ
+# =========================
 
-def build_queue_once(client: Client, post_url: str, mode: str) -> List[str]:
-    post_uri = resolve_uri_from_post_url(client, post_url)
-    if not post_uri:
-        return []
-    if mode == "likes":
-        return get_likers_in_order(client, post_uri)
-    elif mode == "reposts":
-        return get_reposters_in_order(client, post_uri)
-    else:
-        return []
+def runner_loop(cfg: Config, post_url: str, mode: str, messages: List[str]):
+    """حلقة الخلفية: تتابع الرد على القائمة حسب الترتيب مع الانتظار بين المستخدمين."""
+    key = progress_key(cfg.bluesky_handle, post_url, mode)
+    stop_event: threading.Event = RUNNERS[key]["stop"]
 
-# --------- Worker ----------
-def worker(task: Dict[str, Any]):
-    """
-    task: {
-      handle, password, post_url, mode ('likes'|'reposts'),
-      messages (List[str]), min_delay, max_delay
-    }
-    """
-    handle = task["handle"]
-    password = task["password"]
-    post_url = task["post_url"]
-    mode = task["mode"]
-    messages: List[str] = task["messages"]
-    min_delay, max_delay = int(task["min_delay"]), int(task["max_delay"])
+    # تحميل/تهيئة التقدم
+    progress = _load(cfg.bluesky_handle, post_url, mode) or {}
+    progress.setdefault("stats", {"ok": 0, "fail": 0})
+    progress.setdefault("failures", [])
+    progress.setdefault("skipped_no_posts", [])
+    progress.setdefault("settings", {
+        "handle": cfg.bluesky_handle,
+        "mode": mode,
+        "min_delay": cfg.min_delay,
+        "max_delay": cfg.max_delay,
+    })
+    progress.setdefault("last_error", None)
 
-    # سجّل مفتاح التقدم
-    key = progress_key(handle, post_url, mode)
-
-    # حمّل التقدم
-    progress = load_progress()
-    job = progress.get(key) or {
-        "queue": [],          # list of DIDs المرتبة
-        "index": 0,           # أين وصلنا
-        "processed": [],      # قائمة DIDs تمّت
-        "skipped_no_posts": [],
-        "failures": [],
-        "done": False,
-        "stats": {"ok": 0, "fail": 0}
-    }
-
+    client = None
     try:
-        client = login_client(handle, password)
-
-        # حضّر قائمة المستخدمين مرة واحدة فقط إذا فارغة
-        if not job["queue"]:
-            q = build_queue_once(client, post_url, mode)
-            job["queue"] = q
-            job["index"] = 0
-            save_progress_for_key(key, job)
-
-        # حلقة التنفيذ
-        while job["index"] < len(job["queue"]) and not state["stop_event"].is_set():
-            did = job["queue"][job["index"]]
-
-            # تجاهل المُعالَجين
-            if did in job["processed"]:
-                job["index"] += 1
-                continue
-
-            # آخر بوست للمستخدم
-            try:
-                target_uri = latest_post_uri_for_user(client, did)
-            except Exception:
-                # لو فشل جلب الفيد نعدّه “لا بوست”
-                target_uri = None
-
-            if not target_uri:
-                job["skipped_no_posts"].append(did)
-                job["processed"].append(did)
-                job["index"] += 1
-                save_progress_for_key(key, job)
-                # لا داعي للتأخير إذا لم نرسل شيئًا
-                continue
-
-            # اختر رسالة صالحة
-            valid_msgs = [m.strip() for m in messages if validate_message_template(m.strip())]
-            if not valid_msgs:
-                valid_msgs = ["Thank you! 🙏"]  # أمان احتياطي
-
-            msg = random.choice(valid_msgs)
-
-            # أرسل الرد
-            try:
-                send_reply(client, target_uri, msg)
-                job["stats"]["ok"] += 1
-            except Exception as e:
-                job["stats"]["fail"] += 1
-                job["failures"].append({"did": did, "error": str(e)})
-
-            job["processed"].append(did)
-            job["index"] += 1
-            save_progress_for_key(key, job)
-
-            # تأخير بين المستخدمين
-            if job["index"] < len(job["queue"]) and not state["stop_event"].is_set():
-                delay = random.randint(min_delay, max_delay)
-                for _ in range(delay):
-                    if state["stop_event"].is_set():
-                        break
-                    time.sleep(1)
-
-        # انتهى الدور
-        if job["index"] >= len(job["queue"]):
-            job["done"] = True
-            save_progress_for_key(key, job)
-
+        client = get_client(cfg)
     except Exception as e:
-        # سجّل الفشل العام
-        job.setdefault("failures", []).append({"did": None, "error": f"worker-fatal: {e}"})
-        save_progress_for_key(key, job)
-    finally:
-        # إعادة حالة التشغيل
-        with state["lock"]:
-            state["running"] = False
-            state["current_task"] = None
-            state["stop_event"].clear()
+        progress["last_error"] = f"Login failed: {e}"
+        _save(cfg.bluesky_handle, post_url, mode, progress)
+        return
 
-# --------- Routes (UI) ----------
+    # حل الـ URI من الرابط
+    resolved = resolve_post_from_url(client, post_url)
+    if not resolved or "uri" not in resolved:
+        progress["last_error"] = "Cannot resolve post URL."
+        _save(cfg.bluesky_handle, post_url, mode, progress)
+        return
+
+    # بناء الجمهور إن لم يكن موجوداً
+    if "audience" not in progress or not isinstance(progress["audience"], list):
+        try:
+            audience = fetch_audience(client, resolved["uri"], "likes" if mode == "likes" else "reposts")
+            progress["audience"] = audience
+            progress["index"] = 0
+            progress["total"] = len(audience)
+            progress["last_error"] = None
+            _save(cfg.bluesky_handle, post_url, mode, progress)
+        except Exception as e:
+            progress["last_error"] = f"Fetch audience failed: {e}"
+            _save(cfg.bluesky_handle, post_url, mode, progress)
+            return
+
+    audience: List[str] = progress.get("audience", [])
+    idx = int(progress.get("index", 0))
+
+    # المعالجة بالتسلسل من الأعلى للأسفل
+    while not stop_event.is_set() and idx < len(audience):
+        did = audience[idx]
+        try:
+            # جلب آخر بوست للمستخدم
+            target_uri = latest_post_uri_for_user(client, did)
+            if not target_uri:
+                # لا منشورات: تخطّي
+                progress["skipped_no_posts"].append(did)
+            else:
+                # اختيار رسالة عشوائية صحيحة
+                msg = random.choice(messages).strip()
+                if not validate_message_template(msg):
+                    raise ValueError("Message failed validation")
+                send_reply(client, target_uri, msg)
+                progress["stats"]["ok"] += 1
+
+            idx += 1
+            progress["index"] = idx
+            progress["last_error"] = None
+            _save(cfg.bluesky_handle, post_url, mode, progress)
+
+            # الانتظار بين المستخدمين
+            sleep_s = random.randint(cfg.min_delay, cfg.max_delay)
+            for _ in range(sleep_s):
+                if stop_event.is_set():
+                    break
+                time.sleep(1)
+
+        except Exception as e:
+            progress["stats"]["fail"] += 1
+            progress.setdefault("failures", []).append({"did": did, "error": str(e)})
+            progress["last_error"] = str(e)
+            idx += 1
+            progress["index"] = idx
+            _save(cfg.bluesky_handle, post_url, mode, progress)
+
+    # انتهت الحلقة أو تم إيقافها
+    RUNNERS.pop(key, None)
+
+
+# =========================
+# الواجهات
+# =========================
+
 @app.route("/", methods=["GET"])
 def home():
-    # عرض الصفحة مع آخر حالة
-    p = load_progress()
-    return render_template("persistent.html",
-                           running=state["running"],
-                           progress=p,
-                           progress_path=PROGRESS_PATH)
+    return render_template("persistent.html")
 
 @app.route("/start", methods=["POST"])
-def start_task():
-    if state["running"]:
-        return jsonify({"ok": False, "msg": "هناك مهمة تعمل فعلًا"}), 400
-
+def start():
     handle = request.form.get("handle", "").strip()
     password = request.form.get("password", "").strip()
     post_url = request.form.get("post_url", "").strip()
-    mode = request.form.get("mode", "likes").strip()  # likes | reposts
-    min_delay = int(request.form.get("min_delay", "200"))
-    max_delay = int(request.form.get("max_delay", "250"))
-    # الرسائل: كل سطر = رسالة
+    mode = request.form.get("process_type", "likes")  # likes | reposts
+    min_delay = int(request.form.get("min_delay") or 200)
+    max_delay = int(request.form.get("max_delay") or 250)
     messages_text = request.form.get("messages", "").strip()
-    messages = [m for m in [x.strip() for x in messages_text.split("\n")] if m]
+    messages = [m for m in messages_text.splitlines() if m.strip()]
 
-    cfg = Config(handle, password, min_delay, max_delay)
-    if not cfg.is_valid():
-        return jsonify({"ok": False, "msg": "أدخل اليوزر + App Password"}), 400
-    if not post_url:
-        return jsonify({"ok": False, "msg": "أدخل رابط البوست"}), 400
-    if mode not in ("likes", "reposts"):
-        return jsonify({"ok": False, "msg": "نوع المعالجة غير صحيح"}), 400
+    cfg = Config(handle, password)
+    cfg.min_delay = min_delay
+    cfg.max_delay = max_delay
 
-    task = {
-        "handle": cfg.bluesky_handle,
-        "password": cfg.bluesky_password,
-        "post_url": post_url,
-        "mode": mode,
-        "messages": messages,
-        "min_delay": cfg.min_delay,
-        "max_delay": cfg.max_delay,
+    if not (cfg.is_valid() and post_url and messages):
+        return jsonify({"ok": False, "error": "المدخلات غير مكتملة"}), 400
+
+    key = progress_key(cfg.bluesky_handle, post_url, mode)
+    if key in RUNNERS:
+        return jsonify({"ok": False, "error": "مهمة قيد التشغيل"}), 400
+
+    # تهيئة التقدم الأساسي
+    base = {
+        "stats": {"ok": 0, "fail": 0},
+        "failures": [],
+        "skipped_no_posts": [],
+        "index": 0,
+        "total": 0,
+        "audience": [],
+        "settings": {
+            "handle": cfg.bluesky_handle,
+            "mode": mode,
+            "min_delay": cfg.min_delay,
+            "max_delay": cfg.max_delay,
+        },
+        "last_error": None,
     }
+    _save(cfg.bluesky_handle, post_url, mode, base)
 
-    with state["lock"]:
-        state["running"] = True
-        state["current_task"] = task
-        state["stop_event"].clear()
-        threading.Thread(target=worker, args=(task,), daemon=True).start()
-
+    # تشغيل الخيط
+    stop_event = threading.Event()
+    t = threading.Thread(target=runner_loop, args=(cfg, post_url, mode, messages), daemon=True)
+    RUNNERS[key] = {"thread": t, "stop": stop_event}
+    t.start()
     return jsonify({"ok": True})
 
 @app.route("/stop", methods=["POST"])
-def stop_task():
-    state["stop_event"].set()
-    return jsonify({"ok": True})
+def stop():
+    handle = request.form.get("handle", "").strip()
+    post_url = request.form.get("post_url", "").strip()
+    mode = request.form.get("process_type", "likes")
+    key = progress_key(handle, post_url, mode)
+    runner = RUNNERS.get(key)
+    if runner:
+        runner["stop"].set()
+        return jsonify({"ok": True})
+    return jsonify({"ok": False, "error": "لا توجد مهمة عاملة"}), 404
 
 @app.route("/resume", methods=["POST"])
-def resume_task():
-    if state["running"]:
-        return jsonify({"ok": False, "msg": "مهمة قيد التشغيل"}), 400
-    # يعيد تشغيل آخر مهمة محفوظة في الذاكرة (من آخر /start ناجح)
-    task = state.get("current_task")
-    if not task:
-        # حاول الاسترجاع من الواجهة مباشرة (نفس حقول /start)
-        handle = request.form.get("handle", "").strip()
-        password = request.form.get("password", "").strip()
-        post_url = request.form.get("post_url", "").strip()
-        mode = request.form.get("mode", "likes").strip()
-        min_delay = int(request.form.get("min_delay", "200"))
-        max_delay = int(request.form.get("max_delay", "250"))
-        messages_text = request.form.get("messages", "").strip()
-        messages = [m for m in [x.strip() for x in messages_text.split("\n")] if m]
-        task = {
-            "handle": handle,
-            "password": password,
-            "post_url": post_url,
-            "mode": mode,
-            "messages": messages,
-            "min_delay": min_delay,
-            "max_delay": max_delay,
-        }
+def resume():
+    # مثل start لكن لا يصفر التقدم
+    handle = request.form.get("handle", "").strip()
+    password = request.form.get("password", "").strip()
+    post_url = request.form.get("post_url", "").strip()
+    mode = request.form.get("process_type", "likes")
+    min_delay = int(request.form.get("min_delay") or 200)
+    max_delay = int(request.form.get("max_delay") or 250)
+    messages_text = request.form.get("messages", "").strip()
+    messages = [m for m in messages_text.splitlines() if m.strip()]
 
-    with state["lock"]:
-        state["running"] = True
-        state["stop_event"].clear()
-        threading.Thread(target=worker, args=(task,), daemon=True).start()
+    cfg = Config(handle, password)
+    cfg.min_delay = min_delay
+    cfg.max_delay = max_delay
 
+    if not (cfg.is_valid() and post_url and messages):
+        return jsonify({"ok": False, "error": "المدخلات غير مكتملة"}), 400
+
+    key = progress_key(cfg.bluesky_handle, post_url, mode)
+    if key in RUNNERS:
+        return jsonify({"ok": False, "error": "مهمة قيد التشغيل"}), 400
+
+    stop_event = threading.Event()
+    t = threading.Thread(target=runner_loop, args=(cfg, post_url, mode, messages), daemon=True)
+    RUNNERS[key] = {"thread": t, "stop": stop_event}
+    t.start()
     return jsonify({"ok": True})
 
 @app.route("/status", methods=["GET"])
 def status():
-    p = load_progress()
-    running = state["running"]
-    return jsonify({"running": running, "progress": p, "progress_path": PROGRESS_PATH})
+    # نعرض ملخصًا لكل مفتاح (قد يكون لديك أكثر من مهمة محفوظة)
+    try:
+        # حمّل الملف الكامل
+        if os.path.exists(PROGRESS_PATH):
+            import json
+            with open(PROGRESS_PATH, "r") as f:
+                all_prog = json.load(f)
+        else:
+            all_prog = {}
+    except Exception:
+        all_prog = {}
 
-# WSGI entry
-def app_factory():
-    return app
+    # هو قيد التشغيل إذا كان له Runner حيّ
+    running_keys = list(RUNNERS.keys())
+    any_running = bool(running_keys)
+
+    # حساب حقول الملخص المطلوبة
+    summary: Dict[str, Dict[str, Any]] = {}
+    for k, prog in all_prog.items():
+        stats = prog.get("stats", {"ok": 0, "fail": 0})
+        skipped = prog.get("skipped_no_posts", [])
+        total = int(prog.get("total", len(prog.get("audience", []))))
+        done = stats.get("ok", 0) + stats.get("fail", 0) + len(skipped)
+        success = stats.get("ok", 0)
+        fail = stats.get("fail", 0)
+        last_error = prog.get("last_error")
+        summary[k] = {
+            "total_audience": total,
+            "done": done,
+            "ok": success,
+            "fail": fail,
+            "skipped": len(skipped),
+            "last_error": last_error,
+        }
+
+    return jsonify({"running": any_running, "progress": all_prog, "summary": summary})
+
+# نقطة دخول غونيكورن
+app = app
