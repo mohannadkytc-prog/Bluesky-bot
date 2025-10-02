@@ -1,53 +1,99 @@
-import re
 import requests
+import re
 
-# تحويل رابط المتصفح إلى URI
-def convert_url_to_uri(url):
+BASE_URL = "https://public.api.bsky.app/xrpc"
+
+# =====================
+# Auth Helper
+# =====================
+def get_api(handle, password):
+    """Login and return auth headers"""
+    url = f"{BASE_URL}/com.atproto.server.createSession"
+    r = requests.post(url, json={"identifier": handle, "password": password})
+    r.raise_for_status()
+    data = r.json()
+    return {
+        "Authorization": f"Bearer {data['accessJwt']}",
+        "Content-Type": "application/json"
+    }
+
+# =====================
+# Extract Post Info
+# =====================
+def resolve_post_from_url(post_url):
     """
-    يحول الرابط العادي من bsky.app إلى uri صحيح
+    Input: https://bsky.app/profile/{handle}/post/{rkey}
+    Output: (did, rkey)
     """
-    match = re.match(r"https:\/\/bsky\.app\/profile\/([^\/]+)\/post\/([^\/]+)", url)
+    match = re.search(r"bsky\.app/profile/([^/]+)/post/([^/?#]+)", post_url)
     if not match:
-        raise ValueError("الرابط غير صحيح")
+        raise ValueError("رابط غير صالح: يجب أن يكون من bsky.app")
     handle = match.group(1)
     rkey = match.group(2)
-    # نستخدم resolveHandle للحصول على DID
-    did = resolve_handle(handle)
-    return f"at://{did}/app.bsky.feed.post/{rkey}"
 
-def resolve_handle(handle):
-    """
-    جلب DID من الـ handle (اليوزر)
-    """
-    resp = requests.get(f"https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle={handle}")
-    data = resp.json()
-    if "did" not in data:
-        raise ValueError("فشل في جلب did من handle")
-    return data["did"]
+    # resolve handle -> DID
+    url = f"{BASE_URL}/com.atproto.identity.resolveHandle?handle={handle}"
+    r = requests.get(url)
+    r.raise_for_status()
+    did = r.json().get("did")
+    return did, rkey
 
-# جلب قائمة المعجبين
-def get_likers(session, uri):
-    resp = session.get("app.bsky.feed.getLikes", params={"uri": uri})
-    data = resp.json()
-    return [item["actor"]["did"] for item in data.get("likes", [])]
+# =====================
+# Get Likers
+# =====================
+def get_likers(uri):
+    url = f"{BASE_URL}/app.bsky.feed.getLikes?uri={uri}"
+    r = requests.get(url)
+    r.raise_for_status()
+    out = []
+    for item in r.json().get("likes", []):
+        out.append(item["actor"]["did"])
+    return out
 
-# جلب قائمة معيدي النشر
-def get_reposters(session, uri):
-    resp = session.get("app.bsky.feed.getRepostedBy", params={"uri": uri})
-    data = resp.json()
-    return [item["did"] for item in data.get("repostedBy", [])]
+# =====================
+# Get Reposters
+# =====================
+def get_reposters(uri):
+    url = f"{BASE_URL}/app.bsky.feed.getRepostedBy?uri={uri}"
+    r = requests.get(url)
+    r.raise_for_status()
+    out = []
+    for item in r.json().get("repostedBy", []):
+        out.append(item["did"])
+    return out
 
-# جلب آخر بوست للمستخدم
-def get_latest_post(session, did):
-    resp = session.get("app.bsky.feed.getAuthorFeed", params={"actor": did, "limit": 1})
-    feed = resp.json().get("feed", [])
+# =====================
+# Get latest post by DID
+# =====================
+def get_latest_post(did):
+    url = f"{BASE_URL}/app.bsky.feed.getAuthorFeed?actor={did}&limit=1"
+    r = requests.get(url)
+    r.raise_for_status()
+    feed = r.json().get("feed", [])
     if not feed:
         return None
     return feed[0]["post"]["uri"]
 
-# الرد على بوست
-def reply_to_post(session, post_uri, text):
-    session.post("app.bsky.feed.post", json={
-        "text": text,
-        "reply": {"parent": {"uri": post_uri}}
-    })
+# =====================
+# Reply to a post
+# =====================
+def reply_to_latest_post(headers, target_did, message):
+    latest_post = get_latest_post(target_did)
+    if not latest_post:
+        return False
+
+    url = f"{BASE_URL}/com.atproto.repo.createRecord"
+    data = {
+        "collection": "app.bsky.feed.post",
+        "repo": headers["Authorization"].split(" ")[1],  # jwt contains repo DID
+        "record": {
+            "text": message,
+            "reply": {
+                "parent": {"uri": latest_post, "cid": ""},
+                "root": {"uri": latest_post, "cid": ""}
+            },
+            "createdAt": __import__("datetime").datetime.utcnow().isoformat() + "Z"
+        }
+    }
+    r = requests.post(url, headers=headers, json=data)
+    return r.status_code == 200
