@@ -1,99 +1,195 @@
-import requests
+# utils.py
 import re
+import time
+from typing import List, Tuple, Optional, Dict
+import requests
 
-BASE_URL = "https://public.api.bsky.app/xrpc"
+BASE = "https://public.api.bsky.app/xrpc"
+TIMEOUT = 30
 
-# =====================
-# Auth Helper
-# =====================
-def get_api(handle, password):
-    """Login and return auth headers"""
-    url = f"{BASE_URL}/com.atproto.server.createSession"
-    r = requests.post(url, json={"identifier": handle, "password": password})
+
+# =========================
+# Auth
+# =========================
+def get_api(handle: str, password: str) -> Tuple[Dict[str, str], str]:
+    """
+    يسجل الدخول ويعيد:
+      - headers: بها الـ Bearer token
+      - repo_did: الـ DID الخاص بحساب البوت (لاستخدامه كـ repo في createRecord)
+    """
+    url = f"{BASE}/com.atproto.server.createSession"
+    r = requests.post(url, json={"identifier": handle, "password": password}, timeout=TIMEOUT)
     r.raise_for_status()
     data = r.json()
-    return {
-        "Authorization": f"Bearer {data['accessJwt']}",
-        "Content-Type": "application/json"
+    access = data["accessJwt"]
+    repo_did = data["did"]
+    headers = {
+        "Authorization": f"Bearer {access}",
+        "Content-Type": "application/json",
     }
+    return headers, repo_did
 
-# =====================
-# Extract Post Info
-# =====================
-def resolve_post_from_url(post_url):
+
+# =========================
+# Helpers: Post URL parsing
+# =========================
+def resolve_post_from_url(post_url: str) -> Tuple[str, str, str]:
     """
-    Input: https://bsky.app/profile/{handle}/post/{rkey}
-    Output: (did, rkey)
+    يأخذ رابط بوست بالشكل:
+      https://bsky.app/profile/{handle}/post/{rkey}
+    ويعيد:
+      - did لصاحب البوست
+      - rkey
+      - uri بصيغة at://did/app.bsky.feed.post/rkey
     """
-    match = re.search(r"bsky\.app/profile/([^/]+)/post/([^/?#]+)", post_url)
-    if not match:
-        raise ValueError("رابط غير صالح: يجب أن يكون من bsky.app")
-    handle = match.group(1)
-    rkey = match.group(2)
+    m = re.search(r"bsky\.app/profile/([^/]+)/post/([^/?#]+)", post_url)
+    if not m:
+        raise ValueError("رابط غير صالح: يجب أن يكون من bsky.app وفيه /profile/.../post/...")
+    handle = m.group(1)
+    rkey = m.group(2)
 
-    # resolve handle -> DID
-    url = f"{BASE_URL}/com.atproto.identity.resolveHandle?handle={handle}"
-    r = requests.get(url)
-    r.raise_for_status()
-    did = r.json().get("did")
-    return did, rkey
+    # resolve handle to DID
+    res = requests.get(
+        f"{BASE}/com.atproto.identity.resolveHandle",
+        params={"handle": handle},
+        timeout=TIMEOUT,
+    )
+    res.raise_for_status()
+    did = res.json()["did"]
 
-# =====================
-# Get Likers
-# =====================
-def get_likers(uri):
-    url = f"{BASE_URL}/app.bsky.feed.getLikes?uri={uri}"
-    r = requests.get(url)
-    r.raise_for_status()
-    out = []
-    for item in r.json().get("likes", []):
-        out.append(item["actor"]["did"])
+    uri = f"at://{did}/app.bsky.feed.post/{rkey}"
+    return did, rkey, uri
+
+
+# =========================
+# Audience: Likers / Reposters (with pagination)
+# =========================
+def _paged_get(url: str, array_key: str, item_path: List[str]) -> List[str]:
+    """
+    مساعد داخلي للترقيم (cursor). يرجّع قائمة DIDs.
+    - url: endpoint الكامل مع query عدا cursor
+    - array_key: اسم المصفوفة في الرد (likes, repostedBy)
+    - item_path: المسار داخل العنصر للوصول إلى الحقل "did"
+      مثال: ["actor", "did"] أو ["did"]
+    """
+    out: List[str] = []
+    cursor = None
+    while True:
+        params = {}
+        if cursor:
+            params["cursor"] = cursor
+        r = requests.get(url, params=params, timeout=TIMEOUT)
+        r.raise_for_status()
+        data = r.json()
+        arr = data.get(array_key, [])
+        for it in arr:
+            node = it
+            for key in item_path:
+                node = node[key]
+            out.append(node)
+        cursor = data.get("cursor")
+        if not cursor:
+            break
+        # خفّة على الـ API
+        time.sleep(0.15)
     return out
 
-# =====================
-# Get Reposters
-# =====================
-def get_reposters(uri):
-    url = f"{BASE_URL}/app.bsky.feed.getRepostedBy?uri={uri}"
-    r = requests.get(url)
-    r.raise_for_status()
-    out = []
-    for item in r.json().get("repostedBy", []):
-        out.append(item["did"])
-    return out
 
-# =====================
-# Get latest post by DID
-# =====================
-def get_latest_post(did):
-    url = f"{BASE_URL}/app.bsky.feed.getAuthorFeed?actor={did}&limit=1"
-    r = requests.get(url)
+def get_likers(uri: str) -> List[str]:
+    """يعيد DIDs لكل من أعجب بالبوست (مرتّبة من أعلى إلى أسفل حسب واجهة الـ API)."""
+    url = f"{BASE}/app.bsky.feed.getLikes?uri={uri}"
+    return _paged_get(url, "likes", ["actor", "did"])
+
+
+def get_reposters(uri: str) -> List[str]:
+    """يعيد DIDs لكل من أعاد نشر البوست (مرتّبة من أعلى إلى أسفل)."""
+    url = f"{BASE}/app.bsky.feed.getRepostedBy?uri={uri}"
+    return _paged_get(url, "repostedBy", ["did"])
+
+
+# =========================
+# Author feed helpers
+# =========================
+def has_posts(did: str) -> bool:
+    """يتحقق إن كان للمستخدم أي منشورات عامة."""
+    r = requests.get(
+        f"{BASE}/app.bsky.feed.getAuthorFeed",
+        params={"actor": did, "limit": 1},
+        timeout=TIMEOUT,
+    )
+    r.raise_for_status()
+    return len(r.json().get("feed", [])) > 0
+
+
+def get_latest_post_uri(did: str) -> Optional[str]:
+    """يعيد at:// URI لآخر منشور للمستخدم، أو None لو لم يوجد."""
+    r = requests.get(
+        f"{BASE}/app.bsky.feed.getAuthorFeed",
+        params={"actor": did, "limit": 1},
+        timeout=TIMEOUT,
+    )
     r.raise_for_status()
     feed = r.json().get("feed", [])
     if not feed:
         return None
     return feed[0]["post"]["uri"]
 
-# =====================
-# Reply to a post
-# =====================
-def reply_to_latest_post(headers, target_did, message):
-    latest_post = get_latest_post(target_did)
-    if not latest_post:
+
+# =========================
+# Reply helpers
+# =========================
+def _get_cid_for_uri(uri: str) -> Optional[str]:
+    """يجلب CID لبوست عبر getPosts."""
+    r = requests.get(
+        f"{BASE}/app.bsky.feed.getPosts",
+        params={"uris": uri},
+        timeout=TIMEOUT,
+    )
+    r.raise_for_status()
+    posts = r.json().get("posts", [])
+    if not posts:
+        return None
+    return posts[0].get("cid")
+
+
+def reply_to_post(headers: Dict[str, str], repo_did: str, parent_uri: str, text: str) -> bool:
+    """
+    يرد على بوست معيّن (parent_uri). يجلب CID ويبني record الرد.
+    """
+    cid = _get_cid_for_uri(parent_uri)
+    if not cid:
         return False
 
-    url = f"{BASE_URL}/com.atproto.repo.createRecord"
-    data = {
+    payload = {
+        "repo": repo_did,
         "collection": "app.bsky.feed.post",
-        "repo": headers["Authorization"].split(" ")[1],  # jwt contains repo DID
         "record": {
-            "text": message,
+            "$type": "app.bsky.feed.post",
+            "text": text,
+            "createdAt": __import__("datetime").datetime.utcnow().isoformat() + "Z",
             "reply": {
-                "parent": {"uri": latest_post, "cid": ""},
-                "root": {"uri": latest_post, "cid": ""}
+                "root": {"uri": parent_uri, "cid": cid},
+                "parent": {"uri": parent_uri, "cid": cid},
             },
-            "createdAt": __import__("datetime").datetime.utcnow().isoformat() + "Z"
-        }
+        },
     }
-    r = requests.post(url, headers=headers, json=data)
-    return r.status_code == 200
+
+    r = requests.post(
+        f"{BASE}/com.atproto.repo.createRecord",
+        headers=headers,
+        json=payload,
+        timeout=TIMEOUT,
+    )
+    # 200 أو 201 كلاهما نجاح مقبول
+    return r.status_code in (200, 201)
+
+
+def reply_to_latest_post(headers: Dict[str, str], repo_did: str, target_did: str, text: str) -> bool:
+    """
+    يرد على آخر منشور للمستخدم target_did.
+    يتجاهل المستخدم إن لم يكن لديه منشورات.
+    """
+    parent_uri = get_latest_post_uri(target_did)
+    if not parent_uri:
+        return False
+    return reply_to_post(headers, repo_did, parent_uri, text)
