@@ -1,185 +1,327 @@
 <!doctype html>
 <html lang="ar" dir="rtl">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Persistent Bluesky Bot</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com"/>
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap" rel="stylesheet"/>
   <style>
-    :root{--bg:#f5f7fb;--card:#fff;--text:#1f2937;--muted:#6b7280;--accent:#6366f1;--ok:#10b981;--warn:#f59e0b;--bad:#ef4444;--soft:#e5e7eb}
-    *{box-sizing:border-box}
-    body{margin:0;background:var(--bg);font-family:'Cairo',system-ui,-apple-system,Segoe UI,Roboto;color:var(--text)}
-    .wrap{max-width:920px;margin:32px auto;padding:0 16px}
-    h1{font-size:34px;margin:0 0 8px}
-    p.mono{font-size:13px;color:var(--muted)}
-    .card{background:var(--card);border-radius:16px;box-shadow:0 8px 20px rgba(17,24,39,.08);padding:20px;margin:18px 0}
-    label{display:block;font-weight:700;margin:10px 0 6px}
-    input,select,textarea{width:100%;padding:12px 14px;border:1px solid var(--soft);border-radius:12px;font-size:15px;background:#fff}
-    textarea{min-height:140px;white-space:pre}
-    .grid{display:grid;gap:14px}
-    .g2{grid-template-columns:1fr 1fr}
-    .row{display:flex;gap:10px;flex-wrap:wrap}
-    .btn{border:0;border-radius:12px;padding:12px 16px;font-weight:700;cursor:pointer}
-    .ok{background:var(--ok);color:#fff}
-    .bad{background:var(--bad);color:#fff}
-    .muted{background:#e9eefb;color:#1f2d5c}
-    .warn{background:var(--warn);color:#fff}
-    .pill{display:inline-block;padding:.25rem .6rem;border-radius:999px;background:#eef2ff;color:#3730a3;font-weight:700;font-size:12px}
-    .stat{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-    .kpi{background:#fff;border:1px solid var(--soft);border-radius:14px;padding:14px;text-align:center}
-    .kpi h3{margin:2px 0 6px;font-size:14px;color:var(--muted)}
-    .kpi div{font-size:22px;font-weight:800}
-    small.hint{color:var(--muted)}
+    :root {
+      --bg: #f6f7fb;
+      --card: #ffffff;
+      --text: #1f2230;
+      --muted: #666b7a;
+      --primary: #5b7cfa;
+      --danger: #ea5455;
+      --ok: #27ae60;
+      --warn: #f39c12;
+      --border: #e6e8ef;
+    }
+    html, body {
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.6;
+    }
+    .container {
+      max-width: 980px;
+      margin: 32px auto;
+      padding: 0 16px;
+    }
+    .title {
+      background: linear-gradient(135deg,#7387ff,#9bb1ff);
+      color: #fff;
+      padding: 28px 22px;
+      border-radius: 16px;
+      box-shadow: 0 10px 24px rgba(115,135,255,.25);
+    }
+    .title h1 { margin: 0 0 6px; font-size: 28px; }
+    .title p { margin: 0; opacity: .95; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 16px;
+      margin-top: 18px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 4px 14px rgba(20,24,40,.04);
+    }
+    .span-12 { grid-column: span 12; }
+    .span-6  { grid-column: span 6; }
+    .span-4  { grid-column: span 4; }
+    .span-3  { grid-column: span 3; }
+    @media (max-width: 900px){ .span-6,.span-4,.span-3 { grid-column: span 12; } }
+
+    label { display:block; font-weight:600; margin:.25rem 0 .35rem; }
+    input[type="text"],
+    input[type="password"],
+    input[type="number"],
+    select, textarea {
+      width: 100%;
+      padding: 10px 12px;
+      background:#fff;
+      border:1px solid var(--border);
+      border-radius: 10px;
+      outline: none;
+      transition: box-shadow .15s, border-color .15s;
+      font-size: 15px;
+    }
+    textarea { min-height: 150px; resize: vertical; }
+    input:focus, select:focus, textarea:focus {
+      border-color: #9bb1ff;
+      box-shadow: 0 0 0 3px rgba(155,177,255,.25);
+    }
+    .help { color: var(--muted); font-size: 13px; margin-top: 6px; }
+
+    .btns { display:flex; gap:10px; flex-wrap:wrap; }
+    .btn {
+      border:0; border-radius:10px; padding:10px 14px;
+      font-weight:700; cursor:pointer; font-size:15px;
+      box-shadow: 0 6px 16px rgba(20,24,40,.08);
+    }
+    .btn-primary { background: var(--primary); color:#fff; }
+    .btn-danger  { background: var(--danger);  color:#fff; }
+    .btn-muted   { background: #eef0f8; color:#223; }
+    .btn:disabled { opacity:.6; cursor:not-allowed; }
+
+    .note {
+      background:#eef3ff; color:#213868;
+      border:1px dashed #b7c5ff;
+      padding:12px; border-radius:10px; margin-top:10px;
+      font-size:14px;
+    }
+
+    .kpis { display:grid; grid-template-columns: repeat(6,1fr); gap:12px; }
+    @media (max-width: 900px){ .kpis { grid-template-columns: repeat(2,1fr); } }
+    .kpi {
+      background:#fff; border:1px solid var(--border);
+      border-radius:12px; padding:14px;
+      text-align:center; box-shadow: 0 6px 16px rgba(20,24,40,.05);
+    }
+    .kpi h3 { margin:0 0 6px; font-size:14px; color:var(--muted); font-weight:700; }
+    .kpi div { font-size:22px; font-weight:800; }
+
+    .pill { display:inline-block; padding:3px 8px; border-radius:999px; font-size:12px; font-weight:700; }
+    .pill.ok { background:#eaf8ef; color:#177d3e; }
+    .pill.idle { background:#fff7e6; color:#a56800; }
+    .pill.run { background:#eaf0ff; color:#2346e6; }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <h1>Persistent Bluesky Bot <span class="pill">Replies on users’ latest posts</span></h1>
-    <p class="mono">يعمل بالخلفية ويستأنف تلقائياً. رجاءً استخدمي <b>App Password</b> من إعدادات Bluesky.</p>
-
-    <div class="card">
-      <h2>بيانات الدخول</h2>
-      <div class="grid g2">
-        <div>
-          <label>حساب بلوسكاي (handle)</label>
-          <input id="handle" placeholder="example.bsky.social"/>
-        </div>
-        <div>
-          <label>كلمة المرور (App Password)</label>
-          <input id="password" type="password" placeholder="xxxx-xxxx-xxxx-xxxx"/>
-        </div>
-      </div>
-      <div style="height:8px"></div>
-      <label>رابط البوست (لجلب الجمهور)</label>
-      <input id="post_url" placeholder="https://bsky.app/profile/USER/post/XXXX"/>
+  <div class="container">
+    <div class="title">
+      <h1>Persistent Bluesky Bot 🤖</h1>
+      <p>يعمل بشكل مستمر في الخلفية. استخدمي <b>App Password</b> من إعدادات Bluesky (وليس كلمة المرور العادية).</p>
     </div>
 
-    <div class="card">
-      <h2>الرسائل</h2>
-      <label>سطر لكل رسالة (سيُختار عشوائياً لكل مستخدم)</label>
-      <textarea id="messages" placeholder="رسالة 1&#10;رسالة 2&#10;رسالة 3"></textarea>
-      <small class="hint">سطر لكل رسالة. الحد 280 حرفاً.</small>
-    </div>
-
-    <div class="card">
-      <h2>الإعدادات</h2>
-      <div class="grid g2">
-        <div>
-          <label>نوع المعالجة</label>
-          <select id="processing_type">
-            <option value="likers">المعجبون (likers)</option>
-            <option value="reposters">معيدو النشر (reposters)</option>
-          </select>
-        </div>
-        <div></div>
-        <div>
-          <label>الحد الأدنى للتأخير (ثواني)</label>
-          <input id="min_delay" type="number" min="0" value="{{ default_min }}"/>
-        </div>
-        <div>
-          <label>الحد الأقصى للتأخير (ثواني)</label>
-          <input id="max_delay" type="number" min="0" value="{{ default_max }}"/>
-        </div>
+    <!-- بيانات الحساب والرابط -->
+    <div class="grid">
+      <div class="card span-6">
+        <label>حساب بلوسكاي (Handle)</label>
+        <input id="in_handle" type="text" placeholder="username.bsky.social" />
+      </div>
+      <div class="card span-6">
+        <label>كلمة المرور (App Password)</label>
+        <input id="in_password" type="password" placeholder="xxxx-xxxx-xxxx-xxxx" />
       </div>
 
-      <div style="height:10px"></div>
-      <div class="row">
-        <button class="btn ok" onclick="queue()">✅ بدء المهمة</button>
-        <button class="btn bad" onclick="stop()">⛔ إيقاف</button>
-        <button class="btn muted" onclick="refresh()">🔄 تحديث الحالة</button>
+      <div class="card span-12">
+        <label>رابط البوست المُستهدف</label>
+        <input id="in_post_url" type="text" placeholder="https://bsky.app/profile/handle/post/xxxxxxxx" />
+        <div class="help">سيجلب البوت جمهور هذا البوست ثم يرد على <b>آخر منشور</b> لكل مستخدم.</div>
       </div>
-      <div style="height:10px"></div>
-      <div class="mono">يحفظ التقدم تلقائياً في ملف <b>progress.json</b> حسب الحساب/الرابط.</div>
     </div>
 
-    <div class="card">
-      <h2>حالة التشغيل</h2>
-      <div class="stat">
-        <div class="kpi">
-          <h3>الحالة</h3>
-          <div id="st_status">Idle</div>
+    <!-- الرسائل -->
+    <div class="grid">
+      <div class="card span-12">
+        <label>الرسائل (سطر لكل رسالة – سيختار البوت عشوائياً لكل مستخدم)</label>
+        <textarea id="in_messages" placeholder="اكتبي كل رسالة في سطر مستقل..."></textarea>
+      </div>
+    </div>
+
+    <!-- الإعدادات -->
+    <div class="grid">
+      <div class="card span-4">
+        <label>نوع المعالجة</label>
+        <select id="in_processing">
+          <option value="likers">المعجبون فقط (Likers)</option>
+          <option value="reposters">معيدو النشر فقط (Reposters)</option>
+        </select>
+      </div>
+      <div class="card span-4">
+        <label>الحد الأدنى للتأخير (ثوانٍ)</label>
+        <input id="in_min_delay" type="number" min="0" value="180" />
+      </div>
+      <div class="card span-4">
+        <label>الحد الأقصى للتأخير (ثوانٍ)</label>
+        <input id="in_max_delay" type="number" min="0" value="300" />
+      </div>
+
+      <div class="card span-12">
+        <div class="btns">
+          <button class="btn btn-primary" id="btn_start">بدء المهمة ✅</button>
+          <button class="btn btn-danger"  id="btn_stop">إيقاف ⛔</button>
+          <button class="btn btn-muted"   id="btn_refresh">تحديث الحالة 🔄</button>
         </div>
-        <div class="kpi">
-          <h3>المهمة الحالية</h3>
-          <div id="st_task">—</div>
-        </div>
-        <div class="kpi">
-          <h3>تم إنجازه</h3>
-          <div id="st_done">0</div>
-        </div>
-        <div class="kpi">
-          <h3>فشل</h3>
-          <div id="st_fail">0</div>
-        </div>
-        <div class="kpi">
-          <h3>إجمالي الجمهور</h3>
-          <div id="st_total">0</div>
-        </div>
-        <div class="kpi">
-          <h3>نسبة النجاح</h3>
-          <div id="st_rate">0%</div>
+        <div class="note" id="save_note">
+          سيُحفظ التقدم تلقائياً في ملف <b>progress.json</b> لكل (حساب/رابط). عند الإيقاف أو التعطل يمكن الاستئناف من حيث توقفت المهمة.
         </div>
       </div>
     </div>
+
+    <!-- حالة التشغيل -->
+    <div class="grid">
+      <div class="card span-12">
+        <h2 style="margin-top:0">حالة التشغيل</h2>
+
+        <div class="kpis" style="margin-top:10px">
+          <div class="kpi">
+            <h3>الحالة</h3>
+            <div id="st_status"><span class="pill idle">Idle</span></div>
+          </div>
+          <div class="kpi">
+            <h3>المهمة الحالية</h3>
+            <div id="st_task">—</div>
+          </div>
+          <div class="kpi">
+            <h3>زمن الجلسة</h3>
+            <div id="st_uptime">0s</div>
+          </div>
+          <div class="kpi">
+            <h3>تم إنجازه</h3>
+            <div id="st_done">0</div>
+          </div>
+          <div class="kpi">
+            <h3>فشل</h3>
+            <div id="st_fail">0</div>
+          </div>
+          <div class="kpi">
+            <h3>تم تجاهله</h3>
+            <div id="st_skip">0</div>
+          </div>
+        </div>
+
+        <div class="kpis" style="margin-top:12px">
+          <div class="kpi">
+            <h3>إجمالي المحاولات</h3>
+            <div id="st_total">0</div>
+          </div>
+          <div class="kpi">
+            <h3>نسبة النجاح</h3>
+            <div id="st_success">0%</div>
+          </div>
+          <div class="kpi">
+            <h3>إجمالي الجمهور</h3>
+            <div id="st_audience">0</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </div>
 
-<script>
-async function queue(){
-  const handle = document.getElementById('handle').value.trim();
-  const password = document.getElementById('password').value.trim();
-  const post_url = document.getElementById('post_url').value.trim();
+  <script>
+    // تعبئة القيم الافتراضية من الخادم (يتم حقنها عبر render_template في بايثون)
+    // إذا لم يقم الباك بإرسال قيم، سيبقى الافتراضي الموجود في الحقول.
+    const defaultMin = {{ default_min|default(180) }};
+    const defaultMax = {{ default_max|default(300) }};
 
-  const messagesRaw = document.getElementById('messages').value || '';
-  const messages = messagesRaw.split('\n').map(s => s.trim()).filter(Boolean);
+    // لو أردتِ فرض اظهار هذه القيم:
+    if (!document.getElementById('in_min_delay').value) {
+      document.getElementById('in_min_delay').value = defaultMin;
+    }
+    if (!document.getElementById('in_max_delay').value) {
+      document.getElementById('in_max_delay').value = defaultMax;
+    }
 
-  const min_delay = parseInt(document.getElementById('min_delay').value || '200');
-  const max_delay = parseInt(document.getElementById('max_delay').value || '250');
-  const processing_type = document.getElementById('processing_type').value;
+    function parseMessages(raw) {
+      return raw.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    }
 
-  const payload = {
-    bluesky_handle: handle,
-    bluesky_password: password,
-    post_url,
-    messages,
-    processing_type,    // 'likers' | 'reposters'
-    min_delay,
-    max_delay
-  };
+    function setStatusPill(text) {
+      const el = document.getElementById('st_status');
+      let cls = 'pill run';
+      if (text.toLowerCase() === 'idle') cls = 'pill idle';
+      if (text.toLowerCase() === 'running') cls = 'pill run';
+      if (text.toLowerCase() === 'stopped') cls = 'pill ok';
+      el.innerHTML = `<span class="${cls}">${text}</span>`;
+    }
 
-  const r = await fetch('/queue_task', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify(payload)
-  });
-  const j = await r.json();
-  alert((j.status || j.error || 'تم الإرسال'));
-  refresh();
-}
+    async function startTask() {
+      const payload = {
+        bluesky_handle: document.getElementById('in_handle').value.trim(),
+        bluesky_password: document.getElementById('in_password').value.trim(),
+        post_url: document.getElementById('in_post_url').value.trim(),
+        processing_type: document.getElementById('in_processing').value, // 'likers' | 'reposters'
+        min_delay: parseInt(document.getElementById('in_min_delay').value || defaultMin, 10),
+        max_delay: parseInt(document.getElementById('in_max_delay').value || defaultMax, 10),
+        messages: parseMessages(document.getElementById('in_messages').value || '')
+      };
 
-async function stop(){
-  await fetch('/stop_task', {method:'POST'});
-  refresh();
-}
+      try {
+        const res = await fetch('/queue_task', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        alert(data.status || data.error || 'تم الإرسال');
+        refresh();
+      } catch (e) {
+        alert('تعذّر بدء المهمة: ' + e);
+      }
+    }
 
-async function refresh(){
-  const r = await fetch('/detailed_progress');
-  const j = await r.json();
+    async function stopTask() {
+      try {
+        const res = await fetch('/stop_task', { method: 'POST' });
+        const data = await res.json();
+        alert(data.status || 'تم الطلب');
+        refresh();
+      } catch (e) {
+        alert('تعذّر الإيقاف: ' + e);
+      }
+    }
 
-  const rs = j.runtime_stats || {};
-  const bp = j.bot_progress || {};
+    async function refresh() {
+      try {
+        const res = await fetch('/detailed_progress');
+        const data = await res.json();
 
-  document.getElementById('st_status').innerText = rs.status || '—';
-  document.getElementById('st_task').innerText = rs.current_task || '—';
-  document.getElementById('st_done').innerText = bp.completed_runs || 0;
-  document.getElementById('st_fail').innerText = bp.failed_runs || 0;
-  document.getElementById('st_total').innerText = bp.audience_total || 0;
+        const rt = data.runtime_stats || {};
+        const bp = data.bot_progress || {};
 
-  const rate = (bp.success_rate || 0) * 100;
-  document.getElementById('st_rate').innerText = `${rate.toFixed(2)}%`;
-}
-refresh();
-</script>
+        setStatusPill(rt.status || 'Idle');
+        document.getElementById('st_task').innerText = rt.current_task || '—';
+        document.getElementById('st_uptime').innerText = rt.session_uptime || '0s';
+
+        document.getElementById('st_done').innerText = bp.completed_runs || 0;
+        document.getElementById('st_fail').innerText = bp.failed_runs || 0;
+        document.getElementById('st_skip').innerText = bp.skipped_runs || 0;
+
+        document.getElementById('st_total').innerText = bp.total_bot_runs || 0;
+        const pct = (bp.success_rate || 0) * 100;
+        document.getElementById('st_success').innerText = (Math.round(pct * 10) / 10) + '%';
+        document.getElementById('st_audience').innerText = bp.audience_total || 0;
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    document.getElementById('btn_start').addEventListener('click', startTask);
+    document.getElementById('btn_stop').addEventListener('click', stopTask);
+    document.getElementById('btn_refresh').addEventListener('click', refresh);
+
+    // تحديث تلقائي كل 20 ثانية
+    setInterval(refresh, 20000);
+    // تحديث أولي
+    refresh();
+  </script>
 </body>
-</html>
+  </html>
