@@ -5,7 +5,7 @@ import random
 import json
 from typing import Dict, List, Tuple, Optional
 
-from atproto import Client, models as M
+from atproto import Client, models as M, client_utils as CU
 
 # ---------- جلسة العميل ----------
 def make_client(handle: str, password: str) -> Client:
@@ -39,9 +39,7 @@ def resolve_post_from_url(client: Client, url: str) -> Tuple[str, str, str]:
     if actor.startswith("did:"):
         did = actor
     else:
-        did = client.com.atproto.identity.resolve_handle(
-            {"handle": actor}
-        ).did
+        did = client.com.atproto.identity.resolve_handle({"handle": actor}).did
 
     at_uri = f"at://{did}/app.bsky.feed.post/{rkey}"
     return did, rkey, at_uri
@@ -53,7 +51,7 @@ def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
     mode: 'likers' | 'reposters'
     """
     audience: List[Dict] = []
-    cursor = None
+    cursor: Optional[str] = None
 
     if mode == "likers":
         while True:
@@ -68,7 +66,8 @@ def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
     elif mode == "reposters":
         while True:
             resp = client.app.bsky.feed.get_reposted_by({"uri": post_at_uri, "cursor": cursor, "limit": 100})
-            for actor in resp.actors or []:
+            # ملاحظة: الحقل الصحيح هو reposted_by
+            for actor in resp.reposted_by or []:
                 audience.append({"did": actor.did, "handle": actor.handle})
             cursor = getattr(resp, "cursor", None)
             if not cursor:
@@ -87,12 +86,16 @@ def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
 
 # ---------- هل للحساب منشورات ----------
 def has_posts(client: Client, did_or_handle: str) -> bool:
-    resp = client.app.bsky.feed.get_author_feed({"actor": did_or_handle, "limit": 1, "filter": "posts_no_replies"})
+    resp = client.app.bsky.feed.get_author_feed(
+        {"actor": did_or_handle, "limit": 1, "filter": "posts_no_replies"}
+    )
     return len(resp.feed or []) > 0
 
 # ---------- آخر منشور للمستخدم ----------
 def latest_post_uri(client: Client, did_or_handle: str) -> Optional[str]:
-    resp = client.app.bsky.feed.get_author_feed({"actor": did_or_handle, "limit": 1, "filter": "posts_no_replies"})
+    resp = client.app.bsky.feed.get_author_feed(
+        {"actor": did_or_handle, "limit": 1, "filter": "posts_no_replies"}
+    )
     if not resp.feed:
         return None
     post = resp.feed[0].post
@@ -100,18 +103,29 @@ def latest_post_uri(client: Client, did_or_handle: str) -> Optional[str]:
 
 # ---------- إرسال رد ----------
 def reply_to_post(client: Client, target_post_uri: str, text: str) -> str:
+    """
+    يرد على بوست محدد بـ target_post_uri.
+    يصلح خطأ create_strong_ref عبر تمرير dict يحوي uri و cid.
+    """
     posts = client.app.bsky.feed.get_posts({"uris": [target_post_uri]})
     if not posts.posts:
         raise RuntimeError("تعذر جلب معلومات البوست الهدف")
 
     parent = posts.posts[0]
-    parent_ref = M.create_strong_ref(parent.uri, parent.cid)
+
+    # ✅ الإصلاح: create_strong_ref يتوقع dict بالشكل {"uri": ..., "cid": ...}
+    parent_ref = CU.create_strong_ref({"uri": parent.uri, "cid": parent.cid})
 
     # الجذر = إن كان للبوست root، استعمله، غير ذلك parent نفسه
     root_ref = parent_ref
-    if getattr(parent, "record", None) and getattr(parent.record, "reply", None) and parent.record.reply.root:
-        root = parent.record.reply.root
-        root_ref = M.create_strong_ref(root.uri, root.cid)
+    try:
+        root = getattr(getattr(parent, "record", None), "reply", None)
+        root = getattr(root, "root", None)
+        if root and getattr(root, "uri", None) and getattr(root, "cid", None):
+            root_ref = CU.create_strong_ref({"uri": root.uri, "cid": root.cid})
+    except Exception:
+        # لو أي خطأ، نستخدم parent كـ root
+        root_ref = parent_ref
 
     record = M.AppBskyFeedPost.Record(
         text=text,
