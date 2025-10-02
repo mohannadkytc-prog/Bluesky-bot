@@ -9,7 +9,6 @@ from flask import Flask, request, jsonify, render_template_string
 
 # استيراد الدوال من utils.py (كما أرسلتها لك سابقًا)
 from utils import (
-    get_api,
     resolve_post_from_url,
     get_likers,
     get_reposters,
