@@ -92,23 +92,78 @@ def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
     return unique
 
 
-# ---------- هل للحساب منشورات ----------
+# ---------- أدوات داخلية للفلترة ----------
+def _is_repost(item) -> bool:
+    """يعيد True إذا كان هذا العنصر عبارة عن إعادة نشر (reason موجود)."""
+    return bool(getattr(item, "reason", None))
+
+
+def _get_author_did_from_post(post) -> Optional[str]:
+    """يحاول استخراج DID لصاحب البوست من الحقول الشائعة."""
+    if hasattr(post, "author") and getattr(post.author, "did", None):
+        return post.author.did
+    # احتياط لو تغيّر الشكل
+    if hasattr(post, "uri"):
+        # at://did/app.bsky.feed.post/rkey
+        parts = str(post.uri).split("/")
+        if len(parts) >= 4 and parts[2].startswith("did:"):
+            return parts[2]
+    return None
+
+
+# ---------- هل للحساب منشورات (أصلية) ----------
 def has_posts(client: Client, did_or_handle: str) -> bool:
-    resp = client.app.bsky.feed.get_author_feed(
-        {"actor": did_or_handle, "limit": 1, "filter": "posts_no_replies"}
-    )
-    return len(resp.feed or []) > 0
+    """
+    يتحقق من وجود منشور/رد أصلي للمستخدم (غير إعادة نشر).
+    نمشي على صفحات قليلة للتأكد.
+    """
+    cursor: Optional[str] = None
+    for _ in range(3):  # صفحات محدودة لتقليل الاستهلاك
+        resp = client.app.bsky.feed.get_author_feed(
+            {"actor": did_or_handle, "limit": 10, "cursor": cursor, "filter": "posts_with_replies"}
+        )
+        if not resp.feed:
+            return False
+        for item in resp.feed:
+            if _is_repost(item):
+                continue
+            post = item.post
+            author_did = _get_author_did_from_post(post)
+            if author_did and author_did == did_or_handle:
+                return True
+        cursor = getattr(resp, "cursor", None)
+        if not cursor:
+            break
+    return False
 
 
-# ---------- آخر منشور للمستخدم ----------
+# ---------- آخر منشور للمستخدم (أصلي فقط) ----------
 def latest_post_uri(client: Client, did_or_handle: str) -> Optional[str]:
-    resp = client.app.bsky.feed.get_author_feed(
-        {"actor": did_or_handle, "limit": 1, "filter": "posts_no_replies"}
-    )
-    if not resp.feed:
-        return None
-    post = resp.feed[0].post
-    return post.uri  # at://did/app.bsky.feed.post/rkey
+    """
+    يرجع آخر بوست/رد أصلي للمستخدم نفسه (NOT a repost).
+    يمر على صفحات حتى يجد أو يعيد None.
+    """
+    cursor: Optional[str] = None
+    while True:
+        resp = client.app.bsky.feed.get_author_feed(
+            {"actor": did_or_handle, "limit": 25, "cursor": cursor, "filter": "posts_with_replies"}
+        )
+        if not resp.feed:
+            return None
+
+        for item in resp.feed:
+            if _is_repost(item):
+                continue
+            post = item.post
+            author_did = _get_author_did_from_post(post)
+            if author_did and author_did == did_or_handle:
+                return post.uri  # at://did/app.bsky.feed.post/rkey
+
+        cursor = getattr(resp, "cursor", None)
+        if not cursor:
+            break
+
+    return None
 
 
 # ---------- إرسال رد ----------
