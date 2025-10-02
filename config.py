@@ -26,18 +26,14 @@ class Config:
         max_delay: Optional[int] = None,
     ):
         # بيانات الدخول: إما من الواجهة أو من متغيرات البيئة
-        self.bluesky_handle: Optional[str] = (
-            bluesky_handle or os.getenv("BLUESKY_HANDLE") or os.getenv("BSKY_HANDLE")
-        )
-        self.bluesky_password: Optional[str] = (
-            bluesky_password or os.getenv("BLUESKY_PASSWORD") or os.getenv("BSKY_PASSWORD")
-        )
+        self.bluesky_handle: Optional[str] = bluesky_handle or os.getenv("BLUESKY_HANDLE") or os.getenv("BSKY_HANDLE")
+        self.bluesky_password: Optional[str] = bluesky_password or os.getenv("BLUESKY_PASSWORD") or os.getenv("BSKY_PASSWORD")
 
         # التأخيرات: من الواجهة أو الافتراضي
         self.min_delay: int = int(min_delay if min_delay is not None else DEFAULT_MIN_DELAY)
         self.max_delay: int = int(max_delay if max_delay is not None else DEFAULT_MAX_DELAY)
 
-        # إعدادات إضافية عامة
+        # إعدادات إضافية عامّة
         self.api_timeout: int = int(os.getenv("API_TIMEOUT", "30"))
         self.max_retries: int = int(os.getenv("MAX_RETRIES", "3"))
 
@@ -57,7 +53,4 @@ class Config:
         return bool(self.bluesky_handle and self.bluesky_password)
 
     def __str__(self) -> str:
-        return (
-            f"Config(handle={self.bluesky_handle}, "
-            f"delay={self.min_delay}-{self.max_delay}s, data_dir={DATA_DIR})"
-        )
+        return f"Config(handle={self.bluesky_handle}, delay={self.min_delay}-{self.max_delay}s, data_dir={DATA_DIR})"
