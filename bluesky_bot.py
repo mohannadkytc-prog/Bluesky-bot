@@ -26,6 +26,20 @@ _worker_thread: threading.Thread | None = None
 _stop_flag = threading.Event()
 _lock = threading.Lock()
 
+# ---------------- ضبط فترات التشغيل/الراحة من متغيرات البيئة ----------------
+def _env_minutes(name: str, default_min: int | None) -> int | None:
+    try:
+        v = os.getenv(name)
+        if not v:
+            return default_min
+        x = int(v)
+        return x if x > 0 else None
+    except Exception:
+        return default_min
+
+RUN_MIN = _env_minutes("RUN_MINUTES", None)      # مثال: 60
+REST_MIN = _env_minutes("REST_MINUTES", None)    # مثال: 20 أو 25
+
 # قالب الواجهة (HTML داخل الملف لتفادي مشاكل المسارات)
 INDEX_HTML = """
 <!doctype html><html lang="ar" dir="rtl"><head>
@@ -171,6 +185,8 @@ def _run_worker(cfg: Config, post_url: str, mode: str, messages: List[str]):
         "min_delay": cfg.min_delay,
         "max_delay": cfg.max_delay,
         "post_url": post_url,
+        # نحفظ الرسائل كنص موحّد (سطر لكل رسالة)
+        "messages": "\n".join(messages),
     }
     progress["last_error"] = "-"
     save_progress(PROGRESS_PATH, progress)
@@ -196,6 +212,11 @@ def _run_worker(cfg: Config, post_url: str, mode: str, messages: List[str]):
             progress["stats"]["total"] = len(filtered)
             save_progress(PROGRESS_PATH, progress)
 
+        # ====== مؤقّت دورة التشغيل/الراحة ======
+        run_secs = (RUN_MIN or 0) * 60
+        rest_secs = (REST_MIN or 0) * 60
+        cycle_start = time.time()
+
         # التنفيذ
         while True:
             if _stop_flag.is_set():
@@ -203,6 +224,25 @@ def _run_worker(cfg: Config, post_url: str, mode: str, messages: List[str]):
                     progress["state"] = "Idle"
                     save_progress(PROGRESS_PATH, progress)
                 return
+
+            # --- منطق دورة التشغيل/الراحة ---
+            if run_secs > 0 and rest_secs > 0:
+                elapsed = time.time() - cycle_start
+                if elapsed >= run_secs:
+                    with _lock:
+                        progress["state"] = f"Resting ({REST_MIN}m)"
+                        save_progress(PROGRESS_PATH, progress)
+                    for _ in range(rest_secs):
+                        if _stop_flag.is_set():
+                            with _lock:
+                                progress["state"] = "Idle"
+                                save_progress(PROGRESS_PATH, progress)
+                            return
+                        time.sleep(1)
+                    cycle_start = time.time()
+                    with _lock:
+                        progress["state"] = "Running"
+                        save_progress(PROGRESS_PATH, progress)
 
             with _lock:
                 i = progress.get("index", 0)
@@ -277,11 +317,18 @@ def start():
 
     cfg = Config(handle, password, min_delay, max_delay)
 
-    # إعادة تهيئة المؤشرات
+    # إعادة تهيئة المؤشرات + حفظ الرسائل داخل task
     progress = load_progress(PROGRESS_PATH)
     progress.update({
         "state": "Queued",
-        "task": {"handle": handle, "mode": mode, "min_delay": min_delay, "max_delay": max_delay, "post_url": post_url},
+        "task": {
+            "handle": handle,
+            "mode": mode,
+            "min_delay": min_delay,
+            "max_delay": max_delay,
+            "post_url": post_url,
+            "messages": "\n".join(messages),
+        },
         "audience": [],
         "index": 0,
         "stats": {"ok": 0, "fail": 0, "total": 0},
@@ -321,15 +368,25 @@ def resume():
     if not (handle and post_url and mode):
         return jsonify(error="لا توجد مهمة محفوظة لاستئنافها"), 400
 
-    messages = request.get_json(silent=True) or {}
-    msgs_raw = (messages.get("messages") or "").strip()
+    # 1) لو أرسلت رسائل جديدة داخل طلب /resume نستخدمها
+    body = request.get_json(silent=True) or {}
+    msgs_raw = (body.get("messages") or "").strip()
+
+    # 2) وإلا نستعيد الرسائل التي حفظناها عند /start
     if not msgs_raw:
-        msgs_raw = "Thanks for reading.\nAppreciate your support.\n"
+        saved = (task.get("messages") or "").strip()
+        if saved:
+            msgs_raw = saved
+
+    if not msgs_raw:
+        return jsonify(error="لا توجد رسائل محفوظة للاستئناف. ابدئي المهمة من جديد أو مرّري messages إلى /resume."), 400
+
     msgs = [m.strip() for m in msgs_raw.splitlines() if m.strip()]
 
+    # كلمة المرور من متغير البيئة (يجب ضبط BSKY_PASSWORD في Render)
     cfg = Config(handle, os.getenv("BSKY_PASSWORD") or "", min_delay, max_delay)
     if not cfg.bluesky_password:
-        return jsonify(error="لا يمكن الاستئناف بدون كلمة المرور. ابدئي من جديد عبر بدء المهمة."), 400
+        return jsonify(error="لا يمكن الاستئناف بدون كلمة المرور. ضعي BSKY_PASSWORD كمتغير بيئة أو ابدئي من /start."), 400
 
     _stop_flag.clear()
     if _worker_thread and _worker_thread.is_alive():
