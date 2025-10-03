@@ -5,14 +5,13 @@ import time
 import json
 from typing import Dict, List, Tuple, Optional
 
-# محاولة استيراد psycopg (إن لم يكن مُثبتًا وما في DB URL، سنستخدم ملف JSON فقط)
+# ========= اختيارياً: PostgreSQL عبر psycopg =========
 try:
     import psycopg  # psycopg[binary]
     from contextlib import closing
-except Exception:  # pragma: no cover
+except Exception:  # لو المكتبة غير متوفرة
     psycopg = None
-    from contextlib import closing  # still available for typing
-
+    from contextlib import closing  # موجودة بس علشان التايبينغ
 
 from atproto import Client, models as M
 
@@ -218,10 +217,18 @@ def reply_to_post(client: Client, target_post_uri: str, text: str) -> str:
 #                         تخزين التقدّم (DB أو JSON)
 # ======================================================================
 
-# إذا تم ضبط URL لقاعدة البيانات نستخدمها، وإلا نخزن في ملف JSON
-SUPABASE_DB_URL = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL") or ""
+# URL القاعدة: نقبل أكثر من اسم متغير بيئة لمرونة أعلى
+SUPABASE_DB_URL = (
+    os.getenv("DB_URL") or
+    os.getenv("SUPABASE_DB_URL") or
+    os.getenv("DATABASE_URL") or
+    ""
+)
 
-# مفتاح يميّز كل بوت داخل الجدول (خليه فريد لكل خدمة)
+# إجبار استخدام قاعدة البيانات حتى لو في JSON
+FORCE_PG = os.getenv("FORCE_PG", "").strip() in ("1", "true", "True", "YES", "yes")
+
+# مفتاح يميّز كل بوت داخل الجدول
 BOT_KEY = (
     os.getenv("BOT_KEY")
     or os.getenv("RENDER_SERVICE_NAME")
@@ -242,34 +249,50 @@ _DEFAULT_PROGRESS: Dict = {
 
 
 def _db_enabled() -> bool:
-    """هل الاتصال بقاعدة البيانات مفعّل ومكتبة psycopg متاحة؟"""
-    return bool(SUPABASE_DB_URL and psycopg is not None)
+    """
+    هل الاتصال بقاعدة البيانات مفعّل؟
+    - لازم يكون عندنا URL
+    - ومكتبة psycopg متاحة
+    - ولو FORCE_PG=1 بنرجّح DB ولو في حلول ثانية
+    """
+    if not SUPABASE_DB_URL:
+        return False
+    if psycopg is None:
+        # لو مجبَرة DB والباكدج مش موجود، نطبع تحذير
+        if FORCE_PG:
+            print("[progress][warn] FORCE_PG=1 مفعّل لكن psycopg غير متوفر — سيُستخدم JSON كحل مؤقت.")
+        return False
+    return True
 
 
 def _db_init_if_needed() -> None:
-    """ينشئ جدول progress والفهرس لو غير موجودين (آمن لو تكرر النداء)."""
+    """ينشئ جدول progress والفهرس لو غير موجودين (idempotent)."""
     if not _db_enabled():
         return
-    with closing(psycopg.connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            create table if not exists progress (
-                id          bigserial primary key,
-                bot_key     text not null,
-                state       text not null default 'Idle',
-                task        jsonb not null default '{}'::jsonb,
-                audience    jsonb not null default '[]'::jsonb,
-                idx         integer not null default 0,
-                stats       jsonb not null default '{"ok":0,"fail":0,"total":0}'::jsonb,
-                per_user    jsonb not null default '{}'::jsonb,
-                last_error  text not null default '-',
-                updated_at  timestamptz not null default now()
-            );
-            create unique index if not exists progress_bot_key_unique
-                on progress (lower(bot_key));
-            """
-        )
-        conn.commit()
+    try:
+        with closing(psycopg.connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                create table if not exists progress (
+                    id          bigserial primary key,
+                    bot_key     text not null,
+                    state       text not null default 'Idle',
+                    task        jsonb not null default '{}'::jsonb,
+                    audience    jsonb not null default '[]'::jsonb,
+                    idx         integer not null default 0,
+                    stats       jsonb not null default '{"ok":0,"fail":0,"total":0}'::jsonb,
+                    per_user    jsonb not null default '{}'::jsonb,
+                    last_error  text not null default '-',
+                    updated_at  timestamptz not null default now()
+                );
+                create unique index if not exists progress_bot_key_unique
+                    on progress (lower(bot_key));
+                """
+            )
+            conn.commit()
+        print(f"[progress][db] ready (bot_key={BOT_KEY})")
+    except Exception as e:
+        print(f"[progress][db][error] init failed: {e}")
 
 
 def _db_load_progress() -> Dict:
@@ -304,9 +327,11 @@ def _db_load_progress() -> Dict:
                 ),
             )
             conn.commit()
+            print(f"[progress][db] created default row for {BOT_KEY}")
             return dict(_DEFAULT_PROGRESS)
 
         state, task, audience, idx, stats, per_user, last_error = row
+        print(f"[progress][db] loaded row for {BOT_KEY} (state={state}, idx={idx})")
         return {
             "state": state,
             "task": task or {},
@@ -320,7 +345,7 @@ def _db_load_progress() -> Dict:
 
 def _db_save_progress(data: Dict) -> None:
     _db_init_if_needed()
-    # تأكدي من الحقول الأساسية
+    # دمج آمن مع الافتراضي
     merged = dict(_DEFAULT_PROGRESS)
     merged.update(data or {})
     with closing(psycopg.connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
@@ -350,19 +375,22 @@ def _db_save_progress(data: Dict) -> None:
             ),
         )
         conn.commit()
+    print(f"[progress][db] saved (state={merged.get('state')}, idx={merged.get('index')}, ok={merged.get('stats',{}).get('ok')}, fail={merged.get('stats',{}).get('fail')})")
 
 
 # ---------- واجهة التحميل/الحفظ المستخدمة في باقي البرنامج ----------
 def load_progress(path: str) -> Dict:
     """
-    لو SUPABASE_DB_URL (و psycopg) موجودة => نقرأ من Postgres،
+    لو كان DB مُفعَّل (أو مُجبَر عبر FORCE_PG) => نقرأ من Postgres،
     وإلا نقرأ من ملف JSON كما كان سابقًا.
-    في حال فشل الاتصال بقاعدة البيانات، نرجع للملف بدون كسر التشغيل.
+    في حال فشل الاتصال بقاعدة البيانات، نطبع تحذير ونرجع للملف.
     """
-    if _db_enabled():
+    use_db = _db_enabled() or FORCE_PG
+    if use_db and _db_enabled():
         try:
             return _db_load_progress()
-        except Exception:
+        except Exception as e:
+            print(f"[progress][warn] DB load failed, fallback to file: {e}")
             # fallback للملف
             try:
                 with open(path, "r", encoding="utf-8") as f:
@@ -370,6 +398,7 @@ def load_progress(path: str) -> Dict:
             except Exception:
                 return dict(_DEFAULT_PROGRESS)
     else:
+        # JSON فقط
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
@@ -379,19 +408,29 @@ def load_progress(path: str) -> Dict:
 
 def save_progress(path: str, data: Dict) -> None:
     """
-    لو SUPABASE_DB_URL (و psycopg) موجودة => نخزّن في Postgres
-    + نكتب نسخة ملف احتياطية (لا تضر).
+    لو DB مُفعَّل (أو مُجبَر) => نخزّن في Postgres + نكتب نسخة ملف احتياطية،
     وإلا نخزّن في ملف JSON فقط.
     """
-    if _db_enabled():
+    use_db = _db_enabled() or FORCE_PG
+    if use_db and _db_enabled():
         try:
             _db_save_progress(data)
-        finally:
+        except Exception as e:
+            print(f"[progress][warn] DB save failed, fallback to file: {e}")
+            # حتى لو فشل DB، نكتب نسخة ملف
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+        else:
+            # نسخة احتياطية ملف (اختياري)
             try:
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
             except Exception:
                 pass
     else:
+        # JSON فقط
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
