@@ -1,8 +1,18 @@
 # utils.py
+import os
 import re
 import time
 import json
 from typing import Dict, List, Tuple, Optional
+
+# محاولة استيراد psycopg (إن لم يكن مُثبتًا وما في DB URL، سنستخدم ملف JSON فقط)
+try:
+    import psycopg  # psycopg[binary]
+    from contextlib import closing
+except Exception:  # pragma: no cover
+    psycopg = None
+    from contextlib import closing  # still available for typing
+
 
 from atproto import Client, models as M
 
@@ -204,23 +214,184 @@ def reply_to_post(client: Client, target_post_uri: str, text: str) -> str:
     return res.uri
 
 
-# ---------- حفظ/تحميل التقدم ----------
-def load_progress(path: str) -> Dict:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
+# ======================================================================
+#                         تخزين التقدّم (DB أو JSON)
+# ======================================================================
+
+# إذا تم ضبط URL لقاعدة البيانات نستخدمها، وإلا نخزن في ملف JSON
+SUPABASE_DB_URL = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL") or ""
+
+# مفتاح يميّز كل بوت داخل الجدول (خليه فريد لكل خدمة)
+BOT_KEY = (
+    os.getenv("BOT_KEY")
+    or os.getenv("RENDER_SERVICE_NAME")
+    or os.getenv("FLY_APP_NAME")
+    or os.getenv("RAILWAY_SERVICE_NAME")
+    or "default-bot"
+)
+
+_DEFAULT_PROGRESS: Dict = {
+    "state": "Idle",
+    "task": {},
+    "audience": [],
+    "index": 0,
+    "stats": {"ok": 0, "fail": 0, "total": 0},
+    "per_user": {},
+    "last_error": "-",
+}
+
+
+def _db_enabled() -> bool:
+    """هل الاتصال بقاعدة البيانات مفعّل ومكتبة psycopg متاحة؟"""
+    return bool(SUPABASE_DB_URL and psycopg is not None)
+
+
+def _db_init_if_needed() -> None:
+    """ينشئ جدول progress والفهرس لو غير موجودين (آمن لو تكرر النداء)."""
+    if not _db_enabled():
+        return
+    with closing(psycopg.connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            create table if not exists progress (
+                id          bigserial primary key,
+                bot_key     text not null,
+                state       text not null default 'Idle',
+                task        jsonb not null default '{}'::jsonb,
+                audience    jsonb not null default '[]'::jsonb,
+                idx         integer not null default 0,
+                stats       jsonb not null default '{"ok":0,"fail":0,"total":0}'::jsonb,
+                per_user    jsonb not null default '{}'::jsonb,
+                last_error  text not null default '-',
+                updated_at  timestamptz not null default now()
+            );
+            create unique index if not exists progress_bot_key_unique
+                on progress (lower(bot_key));
+            """
+        )
+        conn.commit()
+
+
+def _db_load_progress() -> Dict:
+    _db_init_if_needed()
+    with closing(psycopg.connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            select state, task, audience, idx, stats, per_user, last_error
+            from progress
+            where lower(bot_key)=lower(%s)
+            limit 1;
+            """,
+            (BOT_KEY,),
+        )
+        row = cur.fetchone()
+        if not row:
+            # أنشئ صف جديد بالقيم الافتراضية
+            cur.execute(
+                """
+                insert into progress (bot_key, state, task, audience, idx, stats, per_user, last_error)
+                values (%s, %s, %s, %s, %s, %s, %s, %s);
+                """,
+                (
+                    BOT_KEY,
+                    _DEFAULT_PROGRESS["state"],
+                    psycopg.types.json.Json(_DEFAULT_PROGRESS["task"]),
+                    psycopg.types.json.Json(_DEFAULT_PROGRESS["audience"]),
+                    _DEFAULT_PROGRESS["index"],
+                    psycopg.types.json.Json(_DEFAULT_PROGRESS["stats"]),
+                    psycopg.types.json.Json(_DEFAULT_PROGRESS["per_user"]),
+                    _DEFAULT_PROGRESS["last_error"],
+                ),
+            )
+            conn.commit()
+            return dict(_DEFAULT_PROGRESS)
+
+        state, task, audience, idx, stats, per_user, last_error = row
         return {
-            "state": "Idle",
-            "task": {},
-            "audience": [],
-            "index": 0,
-            "stats": {"ok": 0, "fail": 0, "total": 0},
-            "per_user": {},
-            "last_error": "-",
+            "state": state,
+            "task": task or {},
+            "audience": audience or [],
+            "index": idx or 0,
+            "stats": stats or {"ok": 0, "fail": 0, "total": 0},
+            "per_user": per_user or {},
+            "last_error": last_error or "-",
         }
 
 
+def _db_save_progress(data: Dict) -> None:
+    _db_init_if_needed()
+    # تأكدي من الحقول الأساسية
+    merged = dict(_DEFAULT_PROGRESS)
+    merged.update(data or {})
+    with closing(psycopg.connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into progress (bot_key, state, task, audience, idx, stats, per_user, last_error, updated_at)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, now())
+            on conflict (lower(bot_key)) do update set
+                state = excluded.state,
+                task = excluded.task,
+                audience = excluded.audience,
+                idx = excluded.idx,
+                stats = excluded.stats,
+                per_user = excluded.per_user,
+                last_error = excluded.last_error,
+                updated_at = now();
+            """,
+            (
+                BOT_KEY,
+                merged.get("state", "Idle"),
+                psycopg.types.json.Json(merged.get("task", {})),
+                psycopg.types.json.Json(merged.get("audience", [])),
+                int(merged.get("index", 0)),
+                psycopg.types.json.Json(merged.get("stats", {"ok": 0, "fail": 0, "total": 0})),
+                psycopg.types.json.Json(merged.get("per_user", {})),
+                merged.get("last_error", "-"),
+            ),
+        )
+        conn.commit()
+
+
+# ---------- واجهة التحميل/الحفظ المستخدمة في باقي البرنامج ----------
+def load_progress(path: str) -> Dict:
+    """
+    لو SUPABASE_DB_URL (و psycopg) موجودة => نقرأ من Postgres،
+    وإلا نقرأ من ملف JSON كما كان سابقًا.
+    في حال فشل الاتصال بقاعدة البيانات، نرجع للملف بدون كسر التشغيل.
+    """
+    if _db_enabled():
+        try:
+            return _db_load_progress()
+        except Exception:
+            # fallback للملف
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                return dict(_DEFAULT_PROGRESS)
+    else:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return dict(_DEFAULT_PROGRESS)
+
+
 def save_progress(path: str, data: Dict) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """
+    لو SUPABASE_DB_URL (و psycopg) موجودة => نخزّن في Postgres
+    + نكتب نسخة ملف احتياطية (لا تضر).
+    وإلا نخزّن في ملف JSON فقط.
+    """
+    if _db_enabled():
+        try:
+            _db_save_progress(data)
+        finally:
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+    else:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
