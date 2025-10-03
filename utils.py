@@ -4,14 +4,49 @@ import re
 import time
 import json
 from typing import Dict, List, Tuple, Optional
+from contextlib import closing
 
-# ========= اختيارياً: PostgreSQL عبر psycopg =========
+# ========= PostgreSQL client (يدعم psycopg v3 و psycopg2-binary v2) =========
+FORCE_PG = os.getenv("FORCE_PG", "").strip() in ("1", "true", "True", "YES", "yes")
+
+_psycopg_kind = "none"
 try:
-    import psycopg  # psycopg[binary]
-    from contextlib import closing
-except Exception:  # لو المكتبة غير متوفرة
-    psycopg = None
-    from contextlib import closing  # موجودة بس علشان التايبينغ
+    # psycopg v3
+    import psycopg  # type: ignore
+
+    def _connect(url: str):
+        return psycopg.connect(url)
+
+    def _json_param(v):
+        return psycopg.types.json.Json(v)
+
+    _psycopg_kind = "psycopg3"
+except Exception:
+    try:
+        # psycopg2-binary v2
+        import psycopg2 as psycopg  # type: ignore
+        import psycopg2.extras as _pg2extras  # type: ignore
+
+        def _connect(url: str):
+            return psycopg.connect(url)
+
+        def _json_param(v):
+            return _pg2extras.Json(v)
+
+        _psycopg_kind = "psycopg2"
+    except Exception:
+        psycopg = None  # type: ignore
+
+        def _connect(url: str):
+            raise RuntimeError("psycopg/psycopg2 not installed")
+
+        def _json_param(v):
+            return v
+
+if FORCE_PG and _psycopg_kind == "none":
+    print("[progress][warn] FORCE_PG=1 مفعّل لكن psycopg/psycopg2 غير متوفر — سيتم استخدام JSON مؤقتًا.")
+elif _psycopg_kind != "none":
+    print(f"[progress][info] PostgreSQL via {_psycopg_kind} مفعّل.")
 
 from atproto import Client, models as M
 
@@ -82,7 +117,6 @@ def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
             resp = client.app.bsky.feed.get_reposted_by(
                 {"uri": post_at_uri, "cursor": cursor, "limit": 100}
             )
-            # الحقل الصحيح في الاستجابة:
             for actor in resp.reposted_by or []:
                 audience.append({"did": actor.did, "handle": actor.handle})
             cursor = getattr(resp, "cursor", None)
@@ -219,14 +253,11 @@ def reply_to_post(client: Client, target_post_uri: str, text: str) -> str:
 
 # URL القاعدة: نقبل أكثر من اسم متغير بيئة لمرونة أعلى
 SUPABASE_DB_URL = (
-    os.getenv("DB_URL") or
-    os.getenv("SUPABASE_DB_URL") or
-    os.getenv("DATABASE_URL") or
-    ""
+    os.getenv("DB_URL")
+    or os.getenv("SUPABASE_DB_URL")
+    or os.getenv("DATABASE_URL")
+    or ""
 )
-
-# إجبار استخدام قاعدة البيانات حتى لو في JSON
-FORCE_PG = os.getenv("FORCE_PG", "").strip() in ("1", "true", "True", "YES", "yes")
 
 # مفتاح يميّز كل بوت داخل الجدول
 BOT_KEY = (
@@ -252,15 +283,13 @@ def _db_enabled() -> bool:
     """
     هل الاتصال بقاعدة البيانات مفعّل؟
     - لازم يكون عندنا URL
-    - ومكتبة psycopg متاحة
-    - ولو FORCE_PG=1 بنرجّح DB ولو في حلول ثانية
+    - ومكتبة psycopg (v3) أو psycopg2-binary (v2) متاحة
     """
     if not SUPABASE_DB_URL:
         return False
-    if psycopg is None:
-        # لو مجبَرة DB والباكدج مش موجود، نطبع تحذير
+    if _psycopg_kind == "none":
         if FORCE_PG:
-            print("[progress][warn] FORCE_PG=1 مفعّل لكن psycopg غير متوفر — سيُستخدم JSON كحل مؤقت.")
+            print("[progress][warn] FORCE_PG=1 مفعّل لكن لا توجد مكتبة psycopg/psycopg2 — استخدام JSON.")
         return False
     return True
 
@@ -270,7 +299,7 @@ def _db_init_if_needed() -> None:
     if not _db_enabled():
         return
     try:
-        with closing(psycopg.connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
+        with closing(_connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
             cur.execute(
                 """
                 create table if not exists progress (
@@ -290,14 +319,14 @@ def _db_init_if_needed() -> None:
                 """
             )
             conn.commit()
-        print(f"[progress][db] ready (bot_key={BOT_KEY})")
+        print(f"[progress][db] ready (bot_key={BOT_KEY}) via {_psycopg_kind}")
     except Exception as e:
         print(f"[progress][db][error] init failed: {e}")
 
 
 def _db_load_progress() -> Dict:
     _db_init_if_needed()
-    with closing(psycopg.connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
+    with closing(_connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
         cur.execute(
             """
             select state, task, audience, idx, stats, per_user, last_error
@@ -318,11 +347,11 @@ def _db_load_progress() -> Dict:
                 (
                     BOT_KEY,
                     _DEFAULT_PROGRESS["state"],
-                    psycopg.types.json.Json(_DEFAULT_PROGRESS["task"]),
-                    psycopg.types.json.Json(_DEFAULT_PROGRESS["audience"]),
+                    _json_param(_DEFAULT_PROGRESS["task"]),
+                    _json_param(_DEFAULT_PROGRESS["audience"]),
                     _DEFAULT_PROGRESS["index"],
-                    psycopg.types.json.Json(_DEFAULT_PROGRESS["stats"]),
-                    psycopg.types.json.Json(_DEFAULT_PROGRESS["per_user"]),
+                    _json_param(_DEFAULT_PROGRESS["stats"]),
+                    _json_param(_DEFAULT_PROGRESS["per_user"]),
                     _DEFAULT_PROGRESS["last_error"],
                 ),
             )
@@ -348,7 +377,7 @@ def _db_save_progress(data: Dict) -> None:
     # دمج آمن مع الافتراضي
     merged = dict(_DEFAULT_PROGRESS)
     merged.update(data or {})
-    with closing(psycopg.connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
+    with closing(_connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
         cur.execute(
             """
             insert into progress (bot_key, state, task, audience, idx, stats, per_user, last_error, updated_at)
@@ -366,16 +395,19 @@ def _db_save_progress(data: Dict) -> None:
             (
                 BOT_KEY,
                 merged.get("state", "Idle"),
-                psycopg.types.json.Json(merged.get("task", {})),
-                psycopg.types.json.Json(merged.get("audience", [])),
+                _json_param(merged.get("task", {})),
+                _json_param(merged.get("audience", [])),
                 int(merged.get("index", 0)),
-                psycopg.types.json.Json(merged.get("stats", {"ok": 0, "fail": 0, "total": 0})),
-                psycopg.types.json.Json(merged.get("per_user", {})),
+                _json_param(merged.get("stats", {"ok": 0, "fail": 0, "total": 0})),
+                _json_param(merged.get("per_user", {})),
                 merged.get("last_error", "-"),
             ),
         )
         conn.commit()
-    print(f"[progress][db] saved (state={merged.get('state')}, idx={merged.get('index')}, ok={merged.get('stats',{}).get('ok')}, fail={merged.get('stats',{}).get('fail')})")
+    print(
+        f"[progress][db] saved (state={merged.get('state')}, idx={merged.get('index')}, "
+        f"ok={merged.get('stats',{}).get('ok')}, fail={merged.get('stats',{}).get('fail')})"
+    )
 
 
 # ---------- واجهة التحميل/الحفظ المستخدمة في باقي البرنامج ----------
@@ -391,14 +423,12 @@ def load_progress(path: str) -> Dict:
             return _db_load_progress()
         except Exception as e:
             print(f"[progress][warn] DB load failed, fallback to file: {e}")
-            # fallback للملف
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     return json.load(f)
             except Exception:
                 return dict(_DEFAULT_PROGRESS)
     else:
-        # JSON فقط
         try:
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
@@ -417,20 +447,17 @@ def save_progress(path: str, data: Dict) -> None:
             _db_save_progress(data)
         except Exception as e:
             print(f"[progress][warn] DB save failed, fallback to file: {e}")
-            # حتى لو فشل DB، نكتب نسخة ملف
             try:
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
             except Exception:
                 pass
         else:
-            # نسخة احتياطية ملف (اختياري)
             try:
                 with open(path, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False, indent=2)
             except Exception:
                 pass
     else:
-        # JSON فقط
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
