@@ -6,12 +6,14 @@ import json
 from typing import Dict, List, Tuple, Optional
 from contextlib import closing
 
-# ========= PostgreSQL client (يدعم psycopg v3 و psycopg2-binary v2) =========
-FORCE_PG = os.getenv("FORCE_PG", "").strip() in ("1", "true", "True", "YES", "yes")
+import requests  # لا تحتاجين مكتبة supabase؛ نستخدم REST مباشرة.
 
+# ========= تحكم بأنماط التخزين =========
+FORCE_PG = os.getenv("FORCE_PG", "").strip().lower() in {"1", "true", "yes"}
+
+# ---- إعداد psycopg v3 / psycopg2 إن وُجد (لخيار DB المباشر) ----
 _psycopg_kind = "none"
 try:
-    # psycopg v3
     import psycopg  # type: ignore
 
     def _connect(url: str):
@@ -23,7 +25,6 @@ try:
     _psycopg_kind = "psycopg3"
 except Exception:
     try:
-        # psycopg2-binary v2
         import psycopg2 as psycopg  # type: ignore
         import psycopg2.extras as _pg2extras  # type: ignore
 
@@ -44,79 +45,53 @@ except Exception:
             return v
 
 if FORCE_PG and _psycopg_kind == "none":
-    print("[progress][warn] FORCE_PG=1 مفعّل لكن psycopg/psycopg2 غير متوفر — سيتم استخدام JSON مؤقتًا.")
+    print("[progress][warn] FORCE_PG=1 مفعّل لكن psycopg/psycopg2 غير متوفر — سيتم استخدام REST/JSON حسب المتاح.")
 elif _psycopg_kind != "none":
     print(f"[progress][info] PostgreSQL via {_psycopg_kind} مفعّل.")
 
 from atproto import Client, models as M
 
-
 # ---------- جلسة العميل ----------
 def make_client(handle: str, password: str) -> Client:
-    """يسجّل الدخول ويعيد Client جاهز."""
     c = Client()
-    # مهم: استخدمي App Password (وليس كلمة السر العادية)
-    c.login(handle, password)
+    c.login(handle, password)  # App Password
     return c
 
 
 # ---------- تحليل رابط البوست ----------
 def _parse_bsky_post_url(url: str) -> Tuple[str, str]:
-    """
-    يُعيد (actor, rkey) من رابط مثل:
-    https://bsky.app/profile/{actor}/post/{rkey}
-    - actor قد يكون handle أو did:plc:...
-    """
     m = re.search(r"/profile/([^/]+)/post/([^/?#]+)", url)
     if not m:
         raise ValueError("رابط غير صالح لبوست Bluesky")
-    actor = m.group(1)
-    rkey = m.group(2)
-    return actor, rkey
+    return m.group(1), m.group(2)
 
 
 def resolve_post_from_url(client: Client, url: str) -> Tuple[str, str, str]:
-    """
-    من رابط التطبيق يرجع (did, rkey, at_uri)
-    at_uri = at://{did}/app.bsky.feed.post/{rkey}
-    """
     actor, rkey = _parse_bsky_post_url(url)
-
     if actor.startswith("did:"):
         did = actor
     else:
         did = client.com.atproto.identity.resolve_handle({"handle": actor}).did
-
-    at_uri = f"at://{did}/app.bsky.feed.post/{rkey}"
-    return did, rkey, at_uri
+    return did, rkey, f"at://{did}/app.bsky.feed.post/{rkey}"
 
 
 # ---------- جلب الجمهور ----------
 def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
-    """
-    يرجع قائمة مرتبة من الحسابات (dict لكل مستخدم يحتوي did, handle).
-    mode: 'likers' | 'reposters'
-    """
     audience: List[Dict] = []
     cursor: Optional[str] = None
 
     if mode == "likers":
         while True:
-            resp = client.app.bsky.feed.get_likes(
-                {"uri": post_at_uri, "cursor": cursor, "limit": 100}
-            )
+            resp = client.app.bsky.feed.get_likes({"uri": post_at_uri, "cursor": cursor, "limit": 100})
             for item in resp.likes or []:
                 actor = item.actor
                 audience.append({"did": actor.did, "handle": actor.handle})
             cursor = getattr(resp, "cursor", None)
             if not cursor:
                 break
-
     elif mode == "reposters":
         while True:
-            resp = client.app.bsky.feed.get_reposted_by(
-                {"uri": post_at_uri, "cursor": cursor, "limit": 100}
-            )
+            resp = client.app.bsky.feed.get_reposted_by({"uri": post_at_uri, "cursor": cursor, "limit": 100})
             for actor in resp.reposted_by or []:
                 audience.append({"did": actor.did, "handle": actor.handle})
             cursor = getattr(resp, "cursor", None)
@@ -126,8 +101,7 @@ def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
         raise ValueError("mode يجب أن يكون likers أو reposters")
 
     # إزالة التكرار مع الحفاظ على الترتيب
-    seen = set()
-    unique = []
+    seen, unique = set(), []
     for a in audience:
         if a["did"] not in seen:
             seen.add(a["did"])
@@ -135,33 +109,24 @@ def fetch_audience(client: Client, mode: str, post_at_uri: str) -> List[Dict]:
     return unique
 
 
-# ---------- أدوات داخلية للفلترة ----------
+# ---------- أدوات داخلية ----------
 def _is_repost(item) -> bool:
-    """يعيد True إذا كان هذا العنصر عبارة عن إعادة نشر (reason موجود)."""
     return bool(getattr(item, "reason", None))
 
 
 def _get_author_did_from_post(post) -> Optional[str]:
-    """يحاول استخراج DID لصاحب البوست من الحقول الشائعة."""
     if hasattr(post, "author") and getattr(post.author, "did", None):
         return post.author.did
-    # احتياط لو تغيّر الشكل
     if hasattr(post, "uri"):
-        # at://did/app.bsky.feed.post/rkey
         parts = str(post.uri).split("/")
         if len(parts) >= 4 and parts[2].startswith("did:"):
             return parts[2]
     return None
 
 
-# ---------- هل للحساب منشورات (أصلية) ----------
 def has_posts(client: Client, did_or_handle: str) -> bool:
-    """
-    يتحقق من وجود منشور/رد أصلي للمستخدم (غير إعادة نشر).
-    نمشي على صفحات قليلة للتأكد.
-    """
     cursor: Optional[str] = None
-    for _ in range(3):  # صفحات محدودة لتقليل الاستهلاك
+    for _ in range(3):
         resp = client.app.bsky.feed.get_author_feed(
             {"actor": did_or_handle, "limit": 10, "cursor": cursor, "filter": "posts_with_replies"}
         )
@@ -171,8 +136,7 @@ def has_posts(client: Client, did_or_handle: str) -> bool:
             if _is_repost(item):
                 continue
             post = item.post
-            author_did = _get_author_did_from_post(post)
-            if author_did and author_did == did_or_handle:
+            if _get_author_did_from_post(post) == did_or_handle:
                 return True
         cursor = getattr(resp, "cursor", None)
         if not cursor:
@@ -180,12 +144,7 @@ def has_posts(client: Client, did_or_handle: str) -> bool:
     return False
 
 
-# ---------- آخر منشور للمستخدم (أصلي فقط) ----------
 def latest_post_uri(client: Client, did_or_handle: str) -> Optional[str]:
-    """
-    يرجع آخر بوست/رد أصلي للمستخدم نفسه (NOT a repost).
-    يمر على صفحات حتى يجد أو يعيد None.
-    """
     cursor: Optional[str] = None
     while True:
         resp = client.app.bsky.feed.get_author_feed(
@@ -193,38 +152,25 @@ def latest_post_uri(client: Client, did_or_handle: str) -> Optional[str]:
         )
         if not resp.feed:
             return None
-
         for item in resp.feed:
             if _is_repost(item):
                 continue
             post = item.post
-            author_did = _get_author_did_from_post(post)
-            if author_did and author_did == did_or_handle:
-                return post.uri  # at://did/app.bsky.feed.post/rkey
-
+            if _get_author_did_from_post(post) == did_or_handle:
+                return post.uri
         cursor = getattr(resp, "cursor", None)
         if not cursor:
             break
-
     return None
 
 
-# ---------- إرسال رد ----------
 def reply_to_post(client: Client, target_post_uri: str, text: str) -> str:
-    """
-    يرد على بوست محدد بـ target_post_uri.
-    نبني مراجع root/parent كـ dict يحوي uri و cid (بدون StrongRef).
-    """
     posts = client.app.bsky.feed.get_posts({"uris": [target_post_uri]})
     if not posts.posts:
         raise RuntimeError("تعذر جلب معلومات البوست الهدف")
 
     parent = posts.posts[0]
-
-    # المرجع الأساسي (parent) كـ dict
     parent_ref = {"uri": parent.uri, "cid": parent.cid}
-
-    # المرجع الجذري (root) – إن لم يوجد نستخدم parent
     root_ref = parent_ref
     try:
         root = getattr(getattr(parent, "record", None), "reply", None)
@@ -240,7 +186,6 @@ def reply_to_post(client: Client, target_post_uri: str, text: str) -> str:
         created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         langs=["en"],
     )
-
     res = client.com.atproto.repo.create_record(
         {"collection": "app.bsky.feed.post", "repo": client.me.did, "record": record}
     )
@@ -248,18 +193,30 @@ def reply_to_post(client: Client, target_post_uri: str, text: str) -> str:
 
 
 # ======================================================================
-#                         تخزين التقدّم (DB أو JSON)
+#                         تخزين التقدّم (REST / DB / JSON)
 # ======================================================================
 
-# URL القاعدة: نقبل أكثر من اسم متغير بيئة لمرونة أعلى
-SUPABASE_DB_URL = (
-    os.getenv("DB_URL")
-    or os.getenv("SUPABASE_DB_URL")
-    or os.getenv("DATABASE_URL")
-    or ""
-)
+# REST (Supabase PostgREST)
+SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE") or os.getenv("SUPABASE_ANON_KEY") or ""
+REST_ENABLED = bool(SUPABASE_URL and SUPABASE_KEY)
 
-# مفتاح يميّز كل بوت داخل الجدول
+def _rest_headers():
+    return {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Prefer": "return=representation",
+    }
+
+def _rest_table_url(table: str) -> str:
+    return f"{SUPABASE_URL}/rest/v1/{table}"
+
+# DB مباشر
+SUPABASE_DB_URL = os.getenv("DB_URL") or os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL") or ""
+
+# مفتاح البوت
 BOT_KEY = (
     os.getenv("BOT_KEY")
     or os.getenv("RENDER_SERVICE_NAME")
@@ -278,24 +235,93 @@ _DEFAULT_PROGRESS: Dict = {
     "last_error": "-",
 }
 
+# ---------- REST helpers ----------
+def _rest_get_progress() -> Optional[Dict]:
+    """يرجع صف progress للبوت إن وجد، وإلا None."""
+    url = _rest_table_url("progress")
+    # نفلتر bot_key بالضبط (case-sensitive) لتجنّب مشكلة lower(bot_key)
+    params = {"select": "state,task,audience,idx,stats,per_user,last_error", "bot_key": f"eq.{BOT_KEY}", "limit": "1"}
+    r = requests.get(url, headers=_rest_headers(), params=params, timeout=20)
+    r.raise_for_status()
+    rows = r.json()
+    if rows:
+        row = rows[0]
+        return {
+            "state": row.get("state", "Idle"),
+            "task": row.get("task") or {},
+            "audience": row.get("audience") or [],
+            "index": row.get("idx") or 0,
+            "stats": row.get("stats") or {"ok": 0, "fail": 0, "total": 0},
+            "per_user": row.get("per_user") or {},
+            "last_error": row.get("last_error") or "-",
+        }
+    return None
 
+def _rest_insert_default() -> Dict:
+    """يدخل صف افتراضي للبوت ويعيده."""
+    url = _rest_table_url("progress")
+    payload = [{
+        "bot_key": BOT_KEY,
+        "state": _DEFAULT_PROGRESS["state"],
+        "task": _DEFAULT_PROGRESS["task"],
+        "audience": _DEFAULT_PROGRESS["audience"],
+        "idx": _DEFAULT_PROGRESS["index"],
+        "stats": _DEFAULT_PROGRESS["stats"],
+        "per_user": _DEFAULT_PROGRESS["per_user"],
+        "last_error": _DEFAULT_PROGRESS["last_error"],
+    }]
+    r = requests.post(url, headers={**_rest_headers(), "Prefer": "return=representation"}, json=payload, timeout=20)
+    r.raise_for_status()
+    print(f"[progress][rest] created default row for {BOT_KEY}")
+    return _DEFAULT_PROGRESS.copy()
+
+def _rest_save_progress(data: Dict) -> None:
+    """تحديث أو إدخال حسب وجود الصف."""
+    existing = _rest_get_progress()
+    url = _rest_table_url("progress")
+    merged = dict(_DEFAULT_PROGRESS); merged.update(data or {})
+    if existing is None:
+        # insert
+        body = [{
+            "bot_key": BOT_KEY,
+            "state": merged["state"],
+            "task": merged["task"],
+            "audience": merged["audience"],
+            "idx": int(merged["index"]),
+            "stats": merged["stats"],
+            "per_user": merged["per_user"],
+            "last_error": merged["last_error"],
+        }]
+        r = requests.post(url, headers=_rest_headers(), json=body, timeout=20)
+        r.raise_for_status()
+    else:
+        # update
+        params = {"bot_key": f"eq.{BOT_KEY}"}
+        body = {
+            "state": merged["state"],
+            "task": merged["task"],
+            "audience": merged["audience"],
+            "idx": int(merged["index"]),
+            "stats": merged["stats"],
+            "per_user": merged["per_user"],
+            "last_error": merged["last_error"],
+            "updated_at": "now()",
+        }
+        r = requests.patch(url, headers=_rest_headers(), params=params, json=body, timeout=20)
+        r.raise_for_status()
+    print(f"[progress][rest] saved (state={merged.get('state')}, idx={merged.get('index')})")
+
+# ---------- DB مباشر (كما كان) ----------
 def _db_enabled() -> bool:
-    """
-    هل الاتصال بقاعدة البيانات مفعّل؟
-    - لازم يكون عندنا URL
-    - ومكتبة psycopg (v3) أو psycopg2-binary (v2) متاحة
-    """
     if not SUPABASE_DB_URL:
         return False
     if _psycopg_kind == "none":
         if FORCE_PG:
-            print("[progress][warn] FORCE_PG=1 مفعّل لكن لا توجد مكتبة psycopg/psycopg2 — استخدام JSON.")
+            print("[progress][warn] FORCE_PG=1 مفعّل لكن لا توجد مكتبة psycopg/psycopg2 — سيتم استخدام REST/JSON.")
         return False
     return True
 
-
 def _db_init_if_needed() -> None:
-    """ينشئ جدول progress والفهرس لو غير موجودين (idempotent)."""
     if not _db_enabled():
         return
     try:
@@ -323,7 +349,6 @@ def _db_init_if_needed() -> None:
     except Exception as e:
         print(f"[progress][db][error] init failed: {e}")
 
-
 def _db_load_progress() -> Dict:
     _db_init_if_needed()
     with closing(_connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
@@ -338,7 +363,6 @@ def _db_load_progress() -> Dict:
         )
         row = cur.fetchone()
         if not row:
-            # أنشئ صف جديد بالقيم الافتراضية
             cur.execute(
                 """
                 insert into progress (bot_key, state, task, audience, idx, stats, per_user, last_error)
@@ -358,7 +382,6 @@ def _db_load_progress() -> Dict:
             conn.commit()
             print(f"[progress][db] created default row for {BOT_KEY}")
             return dict(_DEFAULT_PROGRESS)
-
         state, task, audience, idx, stats, per_user, last_error = row
         print(f"[progress][db] loaded row for {BOT_KEY} (state={state}, idx={idx})")
         return {
@@ -371,12 +394,9 @@ def _db_load_progress() -> Dict:
             "last_error": last_error or "-",
         }
 
-
 def _db_save_progress(data: Dict) -> None:
     _db_init_if_needed()
-    # دمج آمن مع الافتراضي
-    merged = dict(_DEFAULT_PROGRESS)
-    merged.update(data or {})
+    merged = dict(_DEFAULT_PROGRESS); merged.update(data or {})
     with closing(_connect(SUPABASE_DB_URL)) as conn, conn.cursor() as cur:
         cur.execute(
             """
@@ -404,60 +424,72 @@ def _db_save_progress(data: Dict) -> None:
             ),
         )
         conn.commit()
-    print(
-        f"[progress][db] saved (state={merged.get('state')}, idx={merged.get('index')}, "
-        f"ok={merged.get('stats',{}).get('ok')}, fail={merged.get('stats',{}).get('fail')})"
-    )
+    print(f"[progress][db] saved (state={merged.get('state')}, idx={merged.get('index')})")
 
 
-# ---------- واجهة التحميل/الحفظ المستخدمة في باقي البرنامج ----------
+# ---------- API موحّد لقراءة/حفظ التقدّم ----------
 def load_progress(path: str) -> Dict:
     """
-    لو كان DB مُفعَّل (أو مُجبَر عبر FORCE_PG) => نقرأ من Postgres،
-    وإلا نقرأ من ملف JSON كما كان سابقًا.
-    في حال فشل الاتصال بقاعدة البيانات، نطبع تحذير ونرجع للملف.
+    الأولوية: REST إذا متاح → DB مباشر إذا مُجبر/متاح → JSON.
     """
-    use_db = _db_enabled() or FORCE_PG
-    if use_db and _db_enabled():
+    # 1) REST
+    if REST_ENABLED and not FORCE_PG:
+        try:
+            row = _rest_get_progress()
+            if row is None:
+                return _rest_insert_default()
+            return row
+        except Exception as e:
+            print(f"[progress][rest][warn] load REST failed, fallback: {e}")
+
+    # 2) DB مباشر
+    use_db = (_db_enabled() and FORCE_PG) or (_db_enabled() and not REST_ENABLED)
+    if use_db:
         try:
             return _db_load_progress()
         except Exception as e:
-            print(f"[progress][warn] DB load failed, fallback to file: {e}")
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                return dict(_DEFAULT_PROGRESS)
-    else:
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return dict(_DEFAULT_PROGRESS)
+            print(f"[progress][db][warn] load DB failed, fallback: {e}")
+
+    # 3) JSON
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return dict(_DEFAULT_PROGRESS)
 
 
 def save_progress(path: str, data: Dict) -> None:
     """
-    لو DB مُفعَّل (أو مُجبَر) => نخزّن في Postgres + نكتب نسخة ملف احتياطية،
-    وإلا نخزّن في ملف JSON فقط.
+    الأولوية: REST إذا متاح → DB مباشر إذا مُجبر/متاح → JSON.
+    تُكتب نسخة JSON دائمًا كنسخة احتياطية عندما ينجح REST/DB.
     """
-    use_db = _db_enabled() or FORCE_PG
-    if use_db and _db_enabled():
+    # 1) REST
+    if REST_ENABLED and not FORCE_PG:
+        try:
+            _rest_save_progress(data)
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+            return
+        except Exception as e:
+            print(f"[progress][rest][warn] save REST failed, fallback: {e}")
+
+    # 2) DB مباشر
+    use_db = (_db_enabled() and FORCE_PG) or (_db_enabled() and not REST_ENABLED)
+    if use_db:
         try:
             _db_save_progress(data)
+            try:
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+            return
         except Exception as e:
-            print(f"[progress][warn] DB save failed, fallback to file: {e}")
-            try:
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-        else:
-            try:
-                with open(path, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-            except Exception:
-                pass
-    else:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+            print(f"[progress][db][warn] save DB failed, fallback: {e}")
+
+    # 3) JSON
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
