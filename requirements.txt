@@ -2,4 +2,4 @@ flask
 gunicorn
 requests
 atproto>=0.0.62
-psycopg[binary]==3.2.1
+psycopg2-binary>=2.9.9
