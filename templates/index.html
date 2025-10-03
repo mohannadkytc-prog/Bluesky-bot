@@ -134,9 +134,17 @@ async function stopTask(){
   refreshStatus();
 }
 async function resumeTask(){
-  const r = await fetch('/resume', {method:'POST'});
+  const body = {
+    // خُذ نفس النص من مربع الرسائل
+    messages: document.getElementById('messages').value
+  };
+  const r = await fetch('/resume', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(body)
+  });
   const j = await r.json();
-  if(!j.ok) alert(j.error||'Error');
+  alert(j.msg || j.error || 'ok');
   refreshStatus();
 }
 async function refreshStatus(){
