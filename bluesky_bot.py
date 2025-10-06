@@ -1,5 +1,6 @@
 # bluesky_bot.py
 import os
+import re
 import random
 import threading
 import time
@@ -17,6 +18,8 @@ from utils import (
     reply_to_post,
     load_progress,
     save_progress,
+    # === جديد لإدارة تقدّم كل حساب ===
+    load_progress_for, save_progress_for, progress_path_for, _fp,
 )
 
 app = Flask(__name__)
@@ -39,6 +42,8 @@ def _env_minutes(name: str, default_min: int | None) -> int | None:
 
 RUN_MIN = _env_minutes("RUN_MINUTES", None)      # مثال: 60
 REST_MIN = _env_minutes("REST_MINUTES", None)    # مثال: 20 أو 25
+
+DATA_DIR = os.getenv("DATA_DIR", "/tmp")
 
 # قالب الواجهة (HTML داخل الملف لتفادي مشاكل المسارات)
 INDEX_HTML = """
@@ -97,7 +102,10 @@ INDEX_HTML = """
       </div>
 
       <label>الرسائل (سطر لكل رسالة، سيُختار عشوائياً لكل مستخدم)</label>
-      <textarea id="messages" placeholder="اكتب كل رسالة في سطر مستقل."></textarea>
+      <textarea id="messages" placeholder="اكتب كل رسالة في سطر مستقل. يمكن استخدام {EMOJI} لوضع الإيموجي في مكان محدد."></textarea>
+
+      <label>قائمة الإيموجي (افصل بينهم بمسافة أو فاصلة)</label>
+      <input id="emojis" placeholder="💙 💔 🙏 ✨, 🕊️, 🌟">
 
       <div class="btns">
         <button class="start" onclick="startTask()">بدء المهمة ✓</button>
@@ -105,7 +113,7 @@ INDEX_HTML = """
         <button class="resume" onclick="resumeTask()">استئناف ▶️</button>
         <button class="ghost" onclick="refreshStatus()">تحديث الحالة 🔄</button>
       </div>
-      <p class="muted">يحفظ التقدّم تلقائياً في ملف <code>{{progress_path}}</code>.</p>
+      <p class="muted">سيتم حفظ التقدّم لكل حساب في مجلد <code>{{data_dir}}</code> باسم <code>progress_&lt;handle&gt;.json</code>.</p>
     </div>
 
     <div>
@@ -134,7 +142,8 @@ async function startTask(){
     mode: document.getElementById('mode').value,
     min_delay: Number(document.getElementById('min_delay').value),
     max_delay: Number(document.getElementById('max_delay').value),
-    messages: document.getElementById('messages').value
+    messages: document.getElementById('messages').value,
+    emojis: document.getElementById('emojis').value
   };
   const r = await fetch('/start', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
   const j = await r.json(); alert(j.msg || j.error || 'ok'); refreshStatus();
@@ -144,15 +153,23 @@ async function stopTask(){
   alert(j.msg || j.error || 'ok'); refreshStatus();
 }
 async function resumeTask(){
-  const r = await fetch('/resume', {method:'POST'}); const j = await r.json();
-  alert(j.msg || j.error || 'ok'); refreshStatus();
+  const body = {
+    handle: document.getElementById('handle').value.trim(),
+    password: document.getElementById('password').value.trim(),
+    messages: document.getElementById('messages').value,
+    emojis: document.getElementById('emojis').value
+  };
+  const r = await fetch('/resume', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const j = await r.json(); alert(j.msg || j.error || 'ok'); refreshStatus();
 }
 async function refreshStatus(){
-  const r = await fetch('/status'); const s = await r.json();
+  const h = document.getElementById('handle').value.trim();
+  const qs = h ? ('?handle=' + encodeURIComponent(h)) : '';
+  const r = await fetch('/status' + qs); const s = await r.json();
   document.getElementById('state').innerText = s.state;
-  document.getElementById('total').innerText = s.stats.total;
-  document.getElementById('ok').innerText = s.stats.ok;
-  document.getElementById('fail').innerText = s.stats.fail;
+  document.getElementById('total').innerText = (s.stats && s.stats.total) || 0;
+  document.getElementById('ok').innerText = (s.stats && s.stats.ok) || 0;
+  document.getElementById('fail').innerText = (s.stats && s.stats.fail) || 0;
   document.getElementById('last_error').innerText = s.last_error || '-';
   document.getElementById('per_user').innerText = JSON.stringify(s.per_user || {}, null, 2);
 }
@@ -168,16 +185,39 @@ def index():
         INDEX_HTML,
         min_delay=DEFAULT_MIN_DELAY,
         max_delay=DEFAULT_MAX_DELAY,
-        progress_path=PROGRESS_PATH,
+        data_dir=DATA_DIR,
     )
 
 # -------------- APIs --------------
 @app.get("/status")
 def status():
+    handle = (request.args.get("handle") or "").strip()
+    if handle:
+        return jsonify(load_progress_for(handle))
     return jsonify(load_progress(PROGRESS_PATH))
 
-def _run_worker(cfg: Config, post_url: str, mode: str, messages: List[str]):
-    progress = load_progress(PROGRESS_PATH)
+def _split_emojis(s: str) -> List[str]:
+    # نفصل على مسافات أو فواصل، ونحذف الفراغات والتكرارات مع الحفاظ على الترتيب
+    raw = [x.strip() for x in re.split(r"[\s,]+", (s or "").strip()) if x.strip()]
+    seen, out = set(), []
+    for e in raw:
+        if e not in seen:
+            seen.add(e)
+            out.append(e)
+    return out
+
+def _compose_with_emoji(base_msg: str, emojis: List[str]) -> str:
+    if not emojis:
+        return base_msg.strip()
+    e = random.choice(emojis)
+    if "{EMOJI}" in base_msg:
+        txt = base_msg.replace("{EMOJI}", e)
+    else:
+        txt = f"{base_msg.strip()} {e}"
+    return re.sub(r"\s+", " ", txt).strip()
+
+def _run_worker(cfg: Config, post_url: str, mode: str, messages: List[str], progress_path: str, emojis: List[str]):
+    progress = load_progress(progress_path)
     progress["state"] = "Running"
     progress["task"] = {
         "handle": cfg.bluesky_handle,
@@ -185,19 +225,18 @@ def _run_worker(cfg: Config, post_url: str, mode: str, messages: List[str]):
         "min_delay": cfg.min_delay,
         "max_delay": cfg.max_delay,
         "post_url": post_url,
-        # نحفظ الرسائل كنص موحّد (سطر لكل رسالة)
         "messages": "\n".join(messages),
+        "emojis": " ".join(emojis),  # نخزنها نصًا
+        "pw_fp": _fp(cfg.bluesky_password),
     }
     progress["last_error"] = "-"
-    save_progress(PROGRESS_PATH, progress)
+    save_progress(progress_path, progress)
 
     try:
         client = make_client(cfg.bluesky_handle, cfg.bluesky_password)
         did, rkey, post_uri = resolve_post_from_url(client, post_url)
 
-        # الجمهور (حسب النوع) بالترتيب
         audience = fetch_audience(client, mode, post_uri)
-        # تصفية من لا يملك منشورات أصلية
         filtered = []
         for a in audience:
             try:
@@ -210,66 +249,64 @@ def _run_worker(cfg: Config, post_url: str, mode: str, messages: List[str]):
             progress["audience"] = filtered
             progress["index"] = progress.get("index", 0)
             progress["stats"]["total"] = len(filtered)
-            save_progress(PROGRESS_PATH, progress)
+            save_progress(progress_path, progress)
 
-        # ====== مؤقّت دورة التشغيل/الراحة ======
         run_secs = (RUN_MIN or 0) * 60
         rest_secs = (REST_MIN or 0) * 60
         cycle_start = time.time()
 
-        # التنفيذ
         while True:
             if _stop_flag.is_set():
                 with _lock:
                     progress["state"] = "Idle"
-                    save_progress(PROGRESS_PATH, progress)
+                    save_progress(progress_path, progress)
                 return
 
-            # --- منطق دورة التشغيل/الراحة ---
             if run_secs > 0 and rest_secs > 0:
                 elapsed = time.time() - cycle_start
                 if elapsed >= run_secs:
                     with _lock:
                         progress["state"] = f"Resting ({REST_MIN}m)"
-                        save_progress(PROGRESS_PATH, progress)
+                        save_progress(progress_path, progress)
                     for _ in range(rest_secs):
                         if _stop_flag.is_set():
                             with _lock:
                                 progress["state"] = "Idle"
-                                save_progress(PROGRESS_PATH, progress)
+                                save_progress(progress_path, progress)
                             return
                         time.sleep(1)
                     cycle_start = time.time()
                     with _lock:
                         progress["state"] = "Running"
-                        save_progress(PROGRESS_PATH, progress)
+                        save_progress(progress_path, progress)
 
             with _lock:
                 i = progress.get("index", 0)
                 if i >= len(progress["audience"]):
                     progress["state"] = "Idle"
-                    save_progress(PROGRESS_PATH, progress)
+                    save_progress(progress_path, progress)
                     return
                 user = progress["audience"][i]
 
-            # إرسال رد على آخر منشور/رد أصلي للمستخدم
             try:
                 target_uri = latest_post_uri(client, user["did"])
                 if not target_uri:
                     raise RuntimeError("skipped_no_own_posts")
 
-                msg = random.choice(messages).strip()
-                if not msg:
+                base_msg = random.choice(messages).strip()
+                if not base_msg:
                     raise RuntimeError("empty_message")
 
-                reply_to_post(client, target_uri, msg)
+                final_msg = _compose_with_emoji(base_msg, _split_emojis(progress["task"].get("emojis", "")))
+
+                reply_to_post(client, target_uri, final_msg)
 
                 with _lock:
                     progress["per_user"][user["did"]] = "ok"
                     progress["stats"]["ok"] += 1
                     progress["index"] = i + 1
                     progress["last_error"] = "-"
-                    save_progress(PROGRESS_PATH, progress)
+                    save_progress(progress_path, progress)
 
             except Exception as e:
                 with _lock:
@@ -277,15 +314,14 @@ def _run_worker(cfg: Config, post_url: str, mode: str, messages: List[str]):
                     progress["stats"]["fail"] += 1
                     progress["index"] = i + 1
                     progress["last_error"] = str(e)
-                    save_progress(PROGRESS_PATH, progress)
+                    save_progress(progress_path, progress)
 
-            # انتظار بين المستخدمين
             delay = random.randint(cfg.min_delay, cfg.max_delay)
             for _ in range(delay):
                 if _stop_flag.is_set():
                     with _lock:
                         progress["state"] = "Idle"
-                        save_progress(PROGRESS_PATH, progress)
+                        save_progress(progress_path, progress)
                     return
                 time.sleep(1)
 
@@ -293,7 +329,7 @@ def _run_worker(cfg: Config, post_url: str, mode: str, messages: List[str]):
         with _lock:
             progress["state"] = "Idle"
             progress["last_error"] = f"Client Error: {e}"
-            save_progress(PROGRESS_PATH, progress)
+            save_progress(progress_path, progress)
 
 @app.post("/start")
 def start():
@@ -306,7 +342,9 @@ def start():
     min_delay = int(body.get("min_delay") or DEFAULT_MIN_DELAY)
     max_delay = int(body.get("max_delay") or DEFAULT_MAX_DELAY)
     messages_raw = body.get("messages") or ""
+    emojis_raw = body.get("emojis") or ""
     messages = [m.strip() for m in messages_raw.splitlines() if m.strip()]
+    emojis = _split_emojis(emojis_raw)
 
     if not (handle and password and post_url and messages):
         return jsonify(error="الرجاء تعبئة الحقول (الحساب/كلمة المرور/الرابط/الرسائل)"), 400
@@ -317,8 +355,7 @@ def start():
 
     cfg = Config(handle, password, min_delay, max_delay)
 
-    # إعادة تهيئة المؤشرات + حفظ الرسائل داخل task
-    progress = load_progress(PROGRESS_PATH)
+    progress = load_progress_for(handle)
     progress.update({
         "state": "Queued",
         "task": {
@@ -328,6 +365,8 @@ def start():
             "max_delay": max_delay,
             "post_url": post_url,
             "messages": "\n".join(messages),
+            "emojis": " ".join(emojis),
+            "pw_fp": _fp(password),
         },
         "audience": [],
         "index": 0,
@@ -335,15 +374,15 @@ def start():
         "per_user": {},
         "last_error": "-",
     })
-    save_progress(PROGRESS_PATH, progress)
+    save_progress_for(handle, progress)
 
-    # شغل الخيط
     _stop_flag.clear()
     if _worker_thread and _worker_thread.is_alive():
         return jsonify(error="المهمة تعمل بالفعل"), 400
 
+    progress_path = progress_path_for(handle)
     _worker_thread = threading.Thread(
-        target=_run_worker, args=(cfg, post_url, mode, messages), daemon=True
+        target=_run_worker, args=(cfg, post_url, mode, messages, progress_path, emojis), daemon=True
     )
     _worker_thread.start()
     return jsonify(msg="تم بدء المهمة")
@@ -356,44 +395,69 @@ def stop():
 @app.post("/resume")
 def resume():
     global _worker_thread
-    progress = load_progress(PROGRESS_PATH)
-
-    task = progress.get("task") or {}
-    handle = task.get("handle")
-    post_url = task.get("post_url")
-    mode = task.get("mode")
-    min_delay = task.get("min_delay") or DEFAULT_MIN_DELAY
-    max_delay = task.get("max_delay") or DEFAULT_MAX_DELAY
-
-    if not (handle and post_url and mode):
-        return jsonify(error="لا توجد مهمة محفوظة لاستئنافها"), 400
-
-    # 1) لو أرسلت رسائل جديدة داخل طلب /resume نستخدمها
     body = request.get_json(silent=True) or {}
-    msgs_raw = (body.get("messages") or "").strip()
 
-    # 2) وإلا نستعيد الرسائل التي حفظناها عند /start
+    ui_handle = (body.get("handle") or "").strip()
+    if not ui_handle:
+        prior = load_progress(PROGRESS_PATH)
+        ui_handle = (prior.get("task", {}).get("handle") or "").strip()
+    if not ui_handle:
+        return jsonify(error="لا يمكن الاستئناف: يرجى إدخال الحساب في الحقل ثم الضغط على استئناف."), 400
+
+    progress = load_progress_for(ui_handle)
+    task = progress.get("task") or {}
+
+    # الرسائل
+    msgs_raw = (body.get("messages") or "").strip()
     if not msgs_raw:
         saved = (task.get("messages") or "").strip()
         if saved:
             msgs_raw = saved
-
     if not msgs_raw:
         return jsonify(error="لا توجد رسائل محفوظة للاستئناف. ابدئي المهمة من جديد أو مرّري messages إلى /resume."), 400
+    messages = [m.strip() for m in msgs_raw.splitlines() if m.strip()]
 
-    msgs = [m.strip() for m in msgs_raw.splitlines() if m.strip()]
+    # الإيموجي
+    emojis_raw = (body.get("emojis") or "").strip()
+    if not emojis_raw:
+        emojis_raw = (task.get("emojis") or "").strip()
+    emojis = _split_emojis(emojis_raw)
 
-    # كلمة المرور من متغير البيئة (يجب ضبط BSKY_PASSWORD في Render)
-    cfg = Config(handle, os.getenv("BSKY_PASSWORD") or "", min_delay, max_delay)
-    if not cfg.bluesky_password:
-        return jsonify(error="لا يمكن الاستئناف بدون كلمة المرور. ضعي BSKY_PASSWORD كمتغير بيئة أو ابدئي من /start."), 400
+    # كلمة المرور
+    ui_password = (body.get("password") or "").strip()
+    password = ui_password or (os.getenv("BSKY_PASSWORD") or "").strip()
+    if not password:
+        return jsonify(error="لا يمكن الاستئناف بدون كلمة المرور. ارسلي password مع /resume أو ضعي BSKY_PASSWORD."), 400
+
+    post_url = task.get("post_url")
+    mode = (task.get("mode") or "likers").strip().lower()
+    min_delay = int(task.get("min_delay") or DEFAULT_MIN_DELAY)
+    max_delay = int(task.get("max_delay") or DEFAULT_MAX_DELAY)
+    if not (post_url and mode):
+        return jsonify(error="لا توجد مهمة محفوظة مكتملة المعطيات لهذا الحساب."), 400
+
+    # حدّث بصمة الاعتماد و/أو قائمة الإيموجي لو تغيّرت
+    old_fp = (task.get("pw_fp") or "").strip()
+    new_fp = _fp(password)
+    if old_fp != new_fp or (task.get("emojis") or "") != " ".join(emojis):
+        task["pw_fp"] = new_fp
+        task["handle"] = ui_handle
+        task["emojis"] = " ".join(emojis)
+        progress["task"] = task
+        for k in ("session", "access_jwt", "refresh_jwt"):
+            if k in progress:
+                progress.pop(k)
+        save_progress_for(ui_handle, progress)
+
+    cfg = Config(ui_handle, password, min_delay, max_delay)
 
     _stop_flag.clear()
     if _worker_thread and _worker_thread.is_alive():
         return jsonify(error="المهمة تعمل بالفعل"), 400
 
+    progress_path = progress_path_for(ui_handle)
     _worker_thread = threading.Thread(
-        target=_run_worker, args=(cfg, post_url, mode, msgs), daemon=True
+        target=_run_worker, args=(cfg, post_url, mode, messages, progress_path, emojis), daemon=True
     )
     _worker_thread.start()
     return jsonify(msg="تم استئناف المهمة")
