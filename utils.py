@@ -493,3 +493,31 @@ def save_progress(path: str, data: Dict) -> None:
     # 3) JSON
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+# ==== إضافات لحفظ تقدّم منفصل لكل حساب + بصمة آمنة ====
+import hashlib
+from pathlib import Path
+
+DATA_DIR = os.getenv("DATA_DIR", "/tmp")
+
+def _fp(s: str) -> str:
+    """بصمة مختصرة (لا نخزن الباسوورد نصيًا)."""
+    return hashlib.sha256((s or "").encode("utf-8")).hexdigest()[:16]
+
+def progress_path_for(handle: str) -> str:
+    """مسار ملف تقدّم خاص بكل handle."""
+    safe = (handle or "unknown").replace("@", "").replace("/", "_").strip()
+    p = Path(DATA_DIR) / f"progress_{safe}.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return str(p)
+
+def load_progress_for(handle: str) -> Dict:
+    """تحميل تقدّم حساب محدد، مع احترام REST/DB/JSON الموجودة عندك."""
+    path = progress_path_for(handle)
+    return load_progress(path)
+
+def save_progress_for(handle: str, data: Dict) -> None:
+    """حفظ تقدّم حساب محدد، مع استمرار مسار REST/DB/JSON."""
+    path = progress_path_for(handle)
+    save_progress(path, data)
